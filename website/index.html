@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VPN Client — indir</title>
+    <meta
+      name="description"
+      content="Kendi sunucunuzda çalışan WireGuard tabanlı VPN istemcisi. Android, Windows, macOS ve Linux."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <p class="brand">VPN Client</p>
+      <h1>Anahtarınız cihazınızdan hiç çıkmaz</h1>
+      <p class="lede">
+        WireGuard tabanlı, kendi sunucunuzda çalışan bir VPN. Özel anahtar
+        cihazınızda üretilir ve orada kalır — sunucu yalnızca açık anahtarı
+        görür, haftada bir de kendiliğinden yenilenir.
+      </p>
+      <a class="cta" href="#downloads">İndir</a>
+    </header>
+
+    <section class="points">
+      <article>
+        <h2>Sunucu özel anahtarı görmez</h2>
+        <p>
+          Anahtar çifti cihazda üretilir, sunucuya yalnızca açık anahtar gider.
+          Sunucu diski ele geçse bile kimsenin trafiği çözülemez.
+        </p>
+      </article>
+      <article>
+        <h2>Sızan yapılandırma kendiliğinden ölür</h2>
+        <p>
+          Cihaz anahtarı varsayılan olarak 7 günde bir değişir. Eski açık
+          anahtar o anda yönlendirilemez hale gelir.
+        </p>
+      </article>
+      <article>
+        <h2>Uygulama yönetici olarak çalışmaz</h2>
+        <p>
+          Masaüstünde tüneli ayrı ve küçük bir servis kurar. Arayüzün tamamı
+          yükseltilmiş yetkiyle çalışmaz.
+        </p>
+      </article>
+    </section>
+
+    <section id="downloads" class="downloads">
+      <h2>İndirmeler</h2>
+
+      <!--
+        Sürüm bağlantıları releases.json'dan doldurulur, böylece yeni bir sürüm
+        yayınlamak bu sayfayı düzenlemeyi gerektirmez.
+      -->
+      <div class="grid" id="download-grid">
+        <p class="loading">Sürümler yükleniyor…</p>
+      </div>
+
+      <div class="notice">
+        <strong>Bu yapılar imzalanmamış.</strong>
+        Windows SmartScreen uyarısı gösterir, macOS Gatekeeper açmayı reddeder.
+        Kod imzalama sertifikaları alınana kadar bu böyle — gizlemektense
+        söylemeyi tercih ediyoruz.
+      </div>
+
+      <div class="notice">
+        <strong>Masaüstünde ek bir servis gerekir.</strong>
+        Tüneli kuran <code>vpnd</code> servisi arşivin içindeki kurulum
+        betiğiyle yüklenir. Uygulama bu servisle konuşur, böylece kendisi
+        yönetici yetkisiyle çalışmak zorunda kalmaz.
+      </div>
+
+      <p class="browser-note">
+        Tarayıcı eklentisi durumu gösterir ve tüneli açıp kapatır. Tünelin
+        kendisini <em>kuramaz</em> — bir eklenti işletim sistemi seviyesinde
+        VPN açamaz, bu yüzden masaüstü uygulaması gerekir.
+      </p>
+    </section>
+
+    <footer>
+      <a href="/dashboard/">Hesabınızı yönetin</a>
+      <span>·</span>
+      <a href="https://github.com/your-org/vpn">Kaynak kodu</a>
+    </footer>
+
+    <script src="downloads.js" type="module"></script>
+  </body>
+</html>

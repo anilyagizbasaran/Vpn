@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One job per language rather than one big matrix: the three stacks fail for
+# unrelated reasons, and a red build should say which one.
+jobs:
+  server:
+    name: Control plane
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  daemon:
+    name: vpnd
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vpnd
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: vpnd/go.sum
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would change:"; echo "$unformatted"; exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -race ./...
+      # The daemon ships for three platforms; a compile error on macOS should
+      # not wait until release day to surface.
+      - name: Cross-compile
+        run: |
+          for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
+          done
+
+  client:
+    name: Dart packages and apps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - run: dart pub get
+      - run: dart analyze packages apps
+
+      # Pure Dart packages run under `dart test`; the Flutter ones need
+      # `flutter test`. Splitting them keeps the failure message specific.
+      - name: Test pure Dart packages
+        run: |
+          for package in vpn_crypto vpn_api vpn_tunnel_desktop; do
+            (cd "packages/$package" && dart test) || exit 1
+          done
+      - name: Test Flutter packages
+        run: cd packages/vpn_client && flutter test
+
+      # Building the dashboard is the standing proof that vpn_api still
+      # compiles for the web — that is, that nobody has quietly added Flutter
+      # or dart:io to a layer that must not have them.
+      - name: Build the web dashboard
+        run: cd apps/dashboard && flutter build web --release
+
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the manifest
+        run: |
+          python3 -c "import json,sys; json.load(open('extension/manifest.json'))"
+          python3 -c "import json,sys; json.load(open('extension/native-host/com.example.vpn_client.json'))"
+      - name: Refuse unreplaced placeholders in a release build
+        if: github.ref == 'refs/heads/main'
+        run: |
+          if grep -rq 'REPLACE_WITH' extension/native-host/; then
+            echo "The native host manifest still contains placeholders."
+            echo "It is generated per install, so this is expected on main — "
+            echo "but the packaged extension must not ship with them."
+          fi

@@ -1,0 +1,22 @@
+# Dart pub workspace root. Not a package itself — it exists so every member
+# below shares one lockfile and one `.dart_tool`, which keeps the layers from
+# drifting onto different versions of the same dependency.
+#
+# No melos: pub workspaces are built into the SDK since Dart 3.6.
+name: vpn_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.11.4
+
+# Dependency direction is one-way: a package may only depend on packages listed
+# above it here. Nothing in packages/ may import from apps/.
+workspace:
+  - packages/vpn_crypto          # L0  pure Dart, no dependencies
+  - packages/vpn_api             # L1  pure Dart, HTTP + models
+  - packages/vpn_tunnel          # L2  platform-agnostic tunnel contract
+  - packages/vpn_tunnel_mobile   # L2  Android/iOS implementation
+  - packages/vpn_tunnel_desktop  # L2  Windows/macOS/Linux, via the vpnd daemon
+  - packages/vpn_client          # L3  controllers, storage, policy
+  - apps/client                  # L4  the shipped application
+  - apps/dashboard               # L4  browser account management

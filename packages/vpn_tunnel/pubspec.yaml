@@ -1,0 +1,15 @@
+name: vpn_tunnel
+description: Platform-agnostic contract for driving a WireGuard tunnel. Pure Dart.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.11.4
+
+# No dependencies at all, and deliberately no reference to any WireGuard
+# plugin. This is the seam that lets the desktop build swap the mobile plugin
+# for an IPC client to the privileged daemon without anything above noticing.
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^6.0.0

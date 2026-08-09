@@ -1,0 +1,50 @@
+# /etc/systemd/system/vpnd.service
+#
+#   sudo install -m 755 vpnd /usr/local/bin/vpnd
+#   sudo groupadd -f vpn && sudo usermod -aG vpn "$USER"
+#   sudo cp deploy/vpnd.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vpnd
+#
+# Log out and back in for the group change to take effect, or the desktop app
+# will not be able to open the socket.
+[Unit]
+Description=VPN client tunnel service
+Documentation=https://github.com/your-org/vpn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vpnd --interface vpn0
+Restart=on-failure
+RestartSec=3
+
+# --- privileges -------------------------------------------------------------
+# Runs as root because wg-quick needs to create an interface and write routes.
+# CAP_NET_ADMIN alone is not enough: wg-quick also calls `ip` and `resolvconf`.
+# The compensating control is that the daemon accepts only a validated tunnel
+# config over its socket — see internal/tunnel/config.go — so reaching it does
+# not give you the ability to run commands.
+User=root
+Group=root
+
+# The socket lives here, group-owned by `vpn` so desktop users in that group
+# can drive the tunnel and nobody else can.
+RuntimeDirectory=vpnd
+RuntimeDirectoryMode=0750
+
+# --- sandboxing -------------------------------------------------------------
+# Deliberately mild. Hardening that blocks netlink, module loading or /dev/net
+# breaks the tunnel itself, and a service that is "hardened" into not working
+# gets disabled by the first user who hits it.
+NoNewPrivileges=no
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true
+# wg-quick reads and writes the tunnel config here.
+ReadWritePaths=/etc/wireguard
+
+[Install]
+WantedBy=multi-user.target

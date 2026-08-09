@@ -1,0 +1,103 @@
+// Command vpnd is the privileged half of the desktop client.
+//
+// It exists because the tunnel needs privileges the GUI must not have: on
+// Windows a WireGuard tunnel service, on Linux CAP_NET_ADMIN. Running the
+// whole GUI elevated to avoid a daemon would put an Electron-sized attack
+// surface at root, which is why Mullvad, Tailscale and every other desktop
+// VPN split the same way.
+//
+// It deliberately knows nothing about the account: no tokens, no API calls.
+// The GUI authenticates, fetches a config and hands the finished config over.
+// Stealing the daemon does not give you the account; stealing the GUI does not
+// give you root.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"vpnd/internal/ipc"
+	"vpnd/internal/tunnel"
+)
+
+func main() {
+	var (
+		socketPath = flag.String("socket", ipc.DefaultSocketPath(), "path of the control socket")
+		iface      = flag.String("interface", "vpn0", "name of the WireGuard interface to manage")
+		configDir  = flag.String("config-dir", tunnel.DefaultConfigDir(), "directory for the tunnel configuration")
+		mock       = flag.Bool("mock", false, "simulate the tunnel instead of touching a real interface")
+		verbose    = flag.Bool("verbose", false, "log at debug level")
+		showVer    = flag.Bool("version", false, "print the version and exit")
+	)
+	flag.Parse()
+
+	if *showVer {
+		fmt.Println(ipc.Version)
+		return
+	}
+
+	level := slog.LevelInfo
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	if err := run(log, *socketPath, *iface, *configDir, *mock); err != nil {
+		log.Error("vpnd stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger, socketPath, iface, configDir string, mock bool) error {
+	var driver tunnel.Driver
+	if mock {
+		log.Warn("mock driver active — no real tunnel will be configured")
+		driver = &tunnel.MockDriver{}
+	} else {
+		exec := tunnel.NewExecDriver()
+		exec.ConfigDir = configDir
+		driver = exec
+	}
+
+	manager := tunnel.NewManager(driver, iface, log)
+
+	listener, err := ipc.Listen(socketPath)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	log.Info("vpnd listening",
+		"socket", socketPath,
+		"interface", iface,
+		"driver", driver.Name(),
+		"version", ipc.Version)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- ipc.NewServer(manager, log).Serve(ctx, listener) }()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+	}
+
+	// A tunnel must never outlive the daemon that manages it: nothing else
+	// would be able to take it down, and the user would be left believing a
+	// dead process is protecting them.
+	log.Info("shutting down, tearing the tunnel down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	manager.Shutdown(shutdownCtx)
+
+	return nil
+}

@@ -1,0 +1,23 @@
+name: vpn_tunnel_mobile
+description: Android and iOS implementation of the vpn_tunnel contract.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.11.4
+  flutter: ">=3.41.0"
+
+# The only package in the repository allowed to import a WireGuard plugin.
+# Everything else goes through `vpn_tunnel`, so replacing or forking this
+# plugin touches exactly one package.
+dependencies:
+  flutter:
+    sdk: flutter
+  vpn_tunnel: ^0.1.0
+  wireguard_flutter_plus: ^1.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

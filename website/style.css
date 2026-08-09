@@ -1,0 +1,197 @@
+:root {
+  --bg: #ffffff;
+  --fg: #14161a;
+  --muted: #5c626b;
+  --line: #e3e6ea;
+  --accent: #2f6bff;
+  --card: #f7f8fa;
+  --notice-bg: #fff8e6;
+  --notice-line: #e8d49a;
+  --notice-fg: #6b5116;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101216;
+    --fg: #eceef1;
+    --muted: #9aa1ab;
+    --line: #262b33;
+    --card: #171a20;
+    --notice-bg: #241f12;
+    --notice-line: #4c421f;
+    --notice-fg: #e8d49a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.hero {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 88px 24px 56px;
+  text-align: center;
+}
+
+.brand {
+  margin: 0 0 28px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  margin: 0 auto 32px;
+  max-width: 34em;
+  color: var(--muted);
+}
+
+.cta,
+.button {
+  display: inline-block;
+  padding: 12px 26px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.points {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 8px 24px 64px;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.points article {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.points h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.points p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.downloads {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 0 24px 72px;
+  border-top: 1px solid var(--line);
+  padding-top: 56px;
+}
+
+.downloads > h2 {
+  margin: 0 0 24px;
+  font-size: 22px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 28px;
+}
+
+.download {
+  padding: 22px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  text-align: center;
+}
+
+/* The platform the visitor is probably on, so the right button is obvious. */
+.download[data-current="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.download h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+
+.hint {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.checksum {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.pending,
+.loading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.notice {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--notice-line);
+  border-radius: 10px;
+  background: var(--notice-bg);
+  color: var(--notice-fg);
+  font-size: 14.5px;
+}
+
+.browser-note {
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--card);
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  font-size: 0.92em;
+}
+
+footer {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  padding: 28px 24px 56px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+}
+
+footer a {
+  color: inherit;
+}

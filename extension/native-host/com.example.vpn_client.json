@@ -1,0 +1,17 @@
+{
+  "name": "com.example.vpn_client",
+  "description": "Bridges the VPN Client extension to the local vpnd service",
+  "path": "REPLACE_WITH_ABSOLUTE_PATH_TO/vpn-browser-host",
+  "type": "stdio",
+
+  "//": [
+    "allowed_origins is the access control for this bridge: only the listed",
+    "extension IDs can start the host, and nothing else on the machine can",
+    "reach the daemon through it. Replace the placeholder with the ID Chrome",
+    "assigns your unpacked or published extension — a wildcard is not",
+    "accepted here, and should not be wanted."
+  ],
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

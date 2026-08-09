@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, e.g. 1.2.0
+        required: true
+
+# Artifacts are unsigned. Signing is procurement, not code: Windows needs an
+# OV or EV certificate, macOS needs an Apple Developer account plus
+# notarisation. Until those exist, users see a SmartScreen warning on Windows
+# and Gatekeeper refuses on macOS — which is exactly why the download page
+# says so rather than pretending otherwise.
+permissions:
+  contents: write
+
+jobs:
+  daemon:
+    name: vpnd (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { target: windows-amd64, goos: windows, goarch: amd64, ext: .exe }
+          - { target: darwin-amd64,  goos: darwin,  goarch: amd64, ext: '' }
+          - { target: darwin-arm64,  goos: darwin,  goarch: arm64, ext: '' }
+          - { target: linux-amd64,   goos: linux,   goarch: amd64, ext: '' }
+          - { target: linux-arm64,   goos: linux,   goarch: arm64, ext: '' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build
+        working-directory: vpnd
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # Reproducible-ish: no cgo, so the binary does not pick up the
+          # runner's libc and refuse to start on an older distribution.
+          CGO_ENABLED: '0'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "${{ inputs.version }}" ] && version="${{ inputs.version }}"
+          mkdir -p dist
+          for cmd in vpnd vpnctl vpn-browser-host; do
+            go build -trimpath \
+              -ldflags "-s -w -X vpnd/internal/ipc.Version=$version" \
+              -o "dist/$cmd${{ matrix.ext }}" "./cmd/$cmd"
+          done
+
+      - name: Package
+        working-directory: vpnd
+        run: |
+          cp deploy/vpnd.service deploy/install-windows.ps1 dist/ 2>/dev/null || true
+          tar -czf "vpnd-${{ matrix.target }}.tar.gz" -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpnd-${{ matrix.target }}
+          path: vpnd/vpnd-${{ matrix.target }}.tar.gz
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: dart pub get
+      - name: Build
+        working-directory: apps/client
+        # The API URL is baked in at build time, so a release build must be
+        # told where the control plane lives or it ships pointing at an
+        # emulator loopback address.
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: apps/client/build/app/outputs/flutter-apk/app-release.apk
+
+  desktop:
+    name: Desktop GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libsecret-1-dev
+
+      - run: dart pub get
+      - name: Build
+        working-directory: apps/client
+        run: |
+          flutter build ${{ runner.os == 'Windows' && 'windows' || runner.os == 'macOS' && 'macos' || 'linux' }} \
+            --release --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: apps/client/build/*/x64/runner/Release/
+
+  dashboard:
+    name: Web dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: dart pub get
+      - name: Build
+        working-directory: apps/dashboard
+        # Empty base URL means same-origin, which is what it gets when Caddy
+        # serves the dashboard and proxies /auth and /peers.
+        run: flutter build web --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard
+          path: apps/dashboard/build/web
+
+  publish:
+    name: Draft the release
+    needs: [daemon, android, desktop, dashboard]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Draft
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/**/*
+          body: |
+            ## Downloads
+
+            These builds are **unsigned**. Windows will show a SmartScreen
+            warning and macOS Gatekeeper will refuse to open the app until
+            code signing certificates are in place.
+
+            The desktop app needs the `vpnd` service installed — see the
+            install script inside the `vpnd-*` archive for your platform.

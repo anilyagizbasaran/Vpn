@@ -1,0 +1,35 @@
+# Secrets and local state
+.env
+.env.local
+server/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Node
+node_modules/
+server/dist/
+
+# Go
+vpnd/bin/
+*.exe
+*.test
+
+# Flutter / Dart
+app/.dart_tool/
+app/build/
+app/.flutter-plugins-dependencies
+app/android/.gradle/
+app/android/local.properties
+app/ios/Pods/
+app/ios/.symlinks/
+*.iml
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Flutter web build output
+apps/dashboard/build/

@@ -1,0 +1,26 @@
+name: vpn_client
+description: Session, device and tunnel orchestration shared by every app surface.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.11.4
+  flutter: ">=3.41.0"
+
+# Layer 3. Knows about the API and the tunnel contract, and nothing about the
+# UI or about any specific platform: no dart:io here, so the web dashboard can
+# reuse the auth half of it.
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: ^9.2.4
+  vpn_api: ^0.1.0
+  vpn_crypto: ^0.1.0
+  vpn_tunnel: ^0.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  http: ^1.5.0

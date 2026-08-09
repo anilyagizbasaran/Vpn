@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VPN Client</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <div class="status">
+        <span id="dot" class="dot"></span>
+        <div>
+          <p id="stage" class="stage">Checking…</p>
+          <p id="detail" class="detail">Talking to the VPN service</p>
+        </div>
+      </div>
+
+      <button id="toggle" class="toggle" disabled>…</button>
+
+      <p id="error" class="error" hidden></p>
+
+      <p class="footnote">
+        This extension shows and controls the tunnel the desktop app created.
+        A browser extension cannot create a VPN tunnel on its own.
+      </p>
+    </main>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

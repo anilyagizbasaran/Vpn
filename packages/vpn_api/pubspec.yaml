@@ -1,0 +1,18 @@
+name: vpn_api
+description: Control plane HTTP client, wire models and repositories. Pure Dart.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.11.4
+
+# No Flutter and no dart:io. Both would stop this package compiling for the
+# web dashboard, which needs exactly the same API client as the apps.
+# Token storage is abstracted behind `SessionStore` for the same reason.
+dependencies:
+  http: ^1.5.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^6.0.0

@@ -1,0 +1,33 @@
+name: vpn_client_app
+description: "WireGuard VPN client for the self-hosted control plane."
+publish_to: 'none'
+version: 1.0.0+1
+resolution: workspace
+
+environment:
+  sdk: ^3.11.4
+
+# Layer 4. Composition root: this is the only place that reads --dart-define,
+# picks a tunnel implementation, and knows which platform it is running on.
+# It contains UI and wiring — no policy, no protocol, no crypto.
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  vpn_api: ^0.1.0
+  vpn_client: ^0.1.0
+  vpn_tunnel: ^0.1.0
+  vpn_tunnel_mobile: ^0.1.0
+  vpn_tunnel_desktop: ^0.1.0
+
+  # Minimal state management — no code generation, no build_runner.
+  provider: ^6.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

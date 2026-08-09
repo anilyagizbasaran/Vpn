@@ -1,0 +1,28 @@
+# /etc/caddy/Caddyfile
+#
+# Caddy handles Let's Encrypt automatically. The API listens on 127.0.0.1 only;
+# nothing but Caddy should be able to reach port 3000.
+#
+# After editing:  sudo systemctl reload caddy
+
+api.example.com {
+	encode zstd gzip
+
+	# Caddy sets X-Forwarded-For itself, which is why the API runs with
+	# TRUST_PROXY=1. Keep those two in sync or per-IP rate limiting breaks.
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/vpn-api.log
+		format json
+	}
+}

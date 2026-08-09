@@ -1,0 +1,18 @@
+name: vpn_tunnel_desktop
+description: Windows, macOS and Linux tunnel, driven through the vpnd daemon.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.11.4
+
+# Pure Dart, no Flutter: the daemon client is just a socket and some JSON, and
+# keeping Flutter out means `dart test` can run a real daemon conversation over
+# a real socket instead of mocking one.
+dependencies:
+  vpn_tunnel: ^0.1.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^6.0.0

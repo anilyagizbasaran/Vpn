@@ -90,16 +90,65 @@ fi
 # ---------------------------------------------------------------------------
 # 2. IP forwarding (persistent)
 # ---------------------------------------------------------------------------
-log "enabling IPv4 forwarding"
+log "kernel network settings"
 SYSCTL_FILE="/etc/sysctl.d/99-wireguard.conf"
-SYSCTL_WANT="net.ipv4.ip_forward = 1"
-if [[ ! -f "$SYSCTL_FILE" ]] || ! grep -qxF "$SYSCTL_WANT" "$SYSCTL_FILE"; then
+
+# Forwarding is required; the rest is throughput tuning.
+#
+# The buffer sizes matter more than they look. A stock rmem_max is around
+# 212 KB, which is not enough to hold a burst of encrypted packets while
+# WireGuard decrypts them — the kernel drops them before WireGuard ever sees
+# them, and the user experiences it as a fast link that stutters. 16 MB is the
+# widely used figure for a gigabit tunnel.
+read -r -d '' SYSCTL_WANT <<EOF || true
+# Managed by setup-wg.sh — do not edit; re-run the script instead.
+
+# Required: without this clients connect and then reach nothing.
+net.ipv4.ip_forward = 1
+
+# Socket buffers. The default is sized for a single host's own traffic, not
+# for a box decrypting everyone else's.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.ipv4.udp_mem = 4096 131072 16777216
+
+# Queue depth between the NIC and the kernel, and how long one NAPI poll may
+# run. Both stop bursts being dropped on a busy interface.
+net.core.netdev_max_backlog = 5000
+net.core.netdev_budget = 600
+
+# Every tunnelled flow takes a conntrack slot because of the NAT rule; the
+# default table fills quietly and new connections then fail at random.
+net.netfilter.nf_conntrack_max = 262144
+
+# BBR with fq behaves far better than cubic on the long, lossy paths a VPN
+# tends to produce. Harmless if the module is missing — sysctl skips it.
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+
+if [[ ! -f "$SYSCTL_FILE" ]] || ! diff -q <(printf '%s\n' "$SYSCTL_WANT") "$SYSCTL_FILE" >/dev/null 2>&1; then
   printf '%s\n' "$SYSCTL_WANT" > "$SYSCTL_FILE"
   ok "wrote $SYSCTL_FILE"
 else
   skip "$SYSCTL_FILE already correct"
 fi
-sysctl -q --system
+
+# nf_conntrack_max only exists once the module is loaded, and BBR only once
+# tcp_bbr is. Load them so the settings apply now rather than after a reboot.
+modprobe nf_conntrack 2>/dev/null || true
+modprobe tcp_bbr 2>/dev/null || true
+
+# --system applies every file; ignore errors from keys this kernel lacks.
+sysctl -q --system 2>/dev/null || sysctl --system 2>&1 | grep -v '^\*' | grep -i error || true
+
+if [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" == "bbr" ]]; then
+  ok "BBR congestion control active"
+else
+  warn "BBR is not active" "the kernel may not have tcp_bbr; cubic still works, just less well on lossy paths"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Server keypair (never regenerated)

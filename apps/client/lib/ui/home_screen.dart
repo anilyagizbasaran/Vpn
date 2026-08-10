@@ -220,9 +220,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
               _DetailsCard(
                 email: auth.user?.email ?? '',
-                deviceLabel: vpn.device?.deviceLabel,
-                region: vpn.device?.region,
-                address: vpn.device?.allowedIp,
+                deviceLabel: vpn.device?.label,
+                region: vpn.selectedServer?.displayName,
+                address: vpn.device?.locations.isEmpty ?? true ? null : vpn.device!.locations.first.allowedIp,
               ),
             ],
           ),

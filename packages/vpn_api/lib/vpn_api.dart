@@ -9,5 +9,5 @@ export 'src/api_client.dart';
 export 'src/api_exception.dart';
 export 'src/auth_repository.dart';
 export 'src/models.dart';
-export 'src/peer_repository.dart';
+export 'src/device_repository.dart';
 export 'src/session_store.dart';

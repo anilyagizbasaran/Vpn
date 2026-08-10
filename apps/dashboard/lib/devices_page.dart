@@ -9,13 +9,13 @@ class DevicesPage extends StatefulWidget {
   const DevicesPage({
     super.key,
     required this.user,
-    required this.peers,
+    required this.devices,
     required this.auth,
     required this.onSignedOut,
   });
 
   final AccountUser user;
-  final PeerRepository peers;
+  final DeviceRepository devices;
   final AuthRepository auth;
   final VoidCallback onSignedOut;
 
@@ -24,7 +24,7 @@ class DevicesPage extends StatefulWidget {
 }
 
 class _DevicesPageState extends State<DevicesPage> {
-  List<Peer>? _devices;
+  List<Device>? _rows;
   String? _error;
   int? _revoking;
 
@@ -37,18 +37,18 @@ class _DevicesPageState extends State<DevicesPage> {
   Future<void> _load() async {
     setState(() => _error = null);
     try {
-      final devices = await widget.peers.list();
-      if (mounted) setState(() => _devices = devices);
+      final rows = await widget.devices.list();
+      if (mounted) setState(() => _rows = rows);
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     }
   }
 
-  Future<void> _revoke(Peer peer) async {
+  Future<void> _revoke(Device peer) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('Remove ${peer.deviceLabel}?'),
+        title: Text('Remove ${peer.label}?'),
         content: const Text(
           'The device loses access immediately and its key stops working. If '
           'you still have it, the app will register it again the next time it '
@@ -70,7 +70,7 @@ class _DevicesPageState extends State<DevicesPage> {
 
     setState(() => _revoking = peer.id);
     try {
-      await widget.peers.revoke(peer.id);
+      await widget.devices.revoke(peer.id);
       await _load();
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -87,7 +87,7 @@ class _DevicesPageState extends State<DevicesPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final devices = _devices;
+    final rows = _rows;
 
     return Scaffold(
       appBar: AppBar(
@@ -138,15 +138,15 @@ class _DevicesPageState extends State<DevicesPage> {
                 const SizedBox(height: 16),
               ],
 
-              if (devices == null)
+              if (rows == null)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 40),
                   child: Center(child: CircularProgressIndicator()),
                 )
-              else if (devices.isEmpty)
+              else if (rows.isEmpty)
                 _EmptyState()
               else
-                ...devices.map(
+                ...rows.map(
                   (peer) => _DeviceTile(
                     peer: peer,
                     busy: _revoking == peer.id,
@@ -168,7 +168,7 @@ class _DeviceTile extends StatelessWidget {
     required this.onRemove,
   });
 
-  final Peer peer;
+  final Device peer;
   final bool busy;
   final VoidCallback onRemove;
 
@@ -183,6 +183,18 @@ class _DeviceTile extends StatelessWidget {
     'unknown': Icons.devices_other,
   };
 
+  /// A device now reaches several regions, so the subtitle summarises them
+  /// rather than pretending there is one address.
+  static String _describe(Device device) {
+    final regions = device.locations.map((l) => l.displayName).join(', ');
+    final parts = <String>[
+      if (regions.isNotEmpty) regions,
+      if (device.locations.isNotEmpty) device.locations.first.allowedIp,
+      if (device.keyRotatedAt != null) 'key rotated',
+    ];
+    return parts.isEmpty ? 'No addresses yet' : parts.join(' · ');
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -192,12 +204,8 @@ class _DeviceTile extends StatelessWidget {
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         leading: Icon(_icons[peer.platform] ?? Icons.devices_other),
-        title: Text(peer.deviceLabel),
-        subtitle: Text(
-          '${peer.region} · ${peer.allowedIp}'
-          '${peer.keyRotatedAt != null ? ' · key rotated' : ''}',
-          style: theme.textTheme.bodySmall,
-        ),
+        title: Text(peer.label),
+        subtitle: Text(_describe(peer), style: theme.textTheme.bodySmall),
         trailing: busy
             ? const SizedBox(
                 height: 18,

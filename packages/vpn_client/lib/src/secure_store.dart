@@ -28,6 +28,7 @@ class SecureStore implements SessionStore, DeviceStore {
   static const _peerPrivateKey = 'peer.private_key';
   static const _peerPublicKey = 'peer.public_key';
   static const _peerKeyCreatedAt = 'peer.key_created_at';
+  static const _selectedServer = 'peer.selected_server';
 
   // --- SessionStore ---------------------------------------------------------
 
@@ -103,7 +104,23 @@ class SecureStore implements SessionStore, DeviceStore {
   }
 
   @override
+  Future<int?> readSelectedServerId() async {
+    final raw = await _storage.read(key: _selectedServer);
+    return raw == null ? null : int.tryParse(raw);
+  }
+
+  @override
+  Future<void> saveSelectedServerId(int? serverId) async {
+    if (serverId == null) {
+      await _storage.delete(key: _selectedServer);
+      return;
+    }
+    await _storage.write(key: _selectedServer, value: serverId.toString());
+  }
+
+  @override
   Future<void> clearDevice() async {
+    await _storage.delete(key: _selectedServer);
     await _storage.delete(key: _peerId);
     await _storage.delete(key: _peerPrivateKey);
     await _storage.delete(key: _peerPublicKey);

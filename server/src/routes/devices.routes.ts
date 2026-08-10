@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { DEVICE_PLATFORMS } from '../db/types.js';
-import type { PeerService } from '../services/peerService.js';
+import type { DeviceService } from '../services/deviceService.js';
 import { authContext } from '../middleware/requireAuth.js';
 import { peerWriteLimiter } from '../middleware/rateLimiters.js';
 import { parseBody, parseIdParam } from '../middleware/validate.js';
@@ -16,16 +16,12 @@ function hasControlChars(value: string): boolean {
   return false;
 }
 
-/**
- * A WireGuard public key: 32 bytes, base64. Only the format is checked here;
- * `PeerService` re-validates before anything reaches the interface.
- */
 const publicKeySchema = z
   .string()
   .regex(/^[A-Za-z0-9+/]{43}=$/, 'publicKey must be a base64-encoded 32-byte WireGuard key');
 
-const createPeerSchema = z.object({
-  deviceLabel: z
+const createDeviceSchema = z.object({
+  label: z
     .string()
     .trim()
     .min(1, 'Device label cannot be empty')
@@ -35,24 +31,29 @@ const createPeerSchema = z.object({
     })
     .default('My device'),
   // Optional. Supplying it means the device generated the keypair itself and
-  // the server never sees the private half. Omitting it falls back to
-  // server-side generation, which returns the private key once.
+  // the server never sees the private half.
   publicKey: publicKeySchema.optional(),
-  // A closed set, because it selects an icon in the device list. An older
-  // client that does not send one gets `unknown` rather than a rejection.
   platform: z.enum(DEVICE_PLATFORMS).optional(),
 });
 
 const rotateKeySchema = z.object({ publicKey: publicKeySchema });
 
-export function createPeersRouter(peers: PeerService, requireAuth: RequestHandler): Router {
+const serverQuerySchema = z.object({
+  serverId: z.coerce.number().int().positive().optional(),
+});
+
+export function createDevicesRouter(devices: DeviceService, requireAuth: RequestHandler): Router {
   const router = Router();
   router.use(requireAuth);
 
+  /**
+   * Registers a device and gives it an address on every server, so switching
+   * region later is a config edit rather than another registration.
+   */
   router.post('/', peerWriteLimiter, async (req, res) => {
     const { userId } = authContext(req);
-    const { deviceLabel, publicKey, platform } = parseBody(createPeerSchema, req.body ?? {});
-    const result = await peers.createPeer(userId, { deviceLabel, publicKey, platform });
+    const { label, publicKey, platform } = parseBody(createDeviceSchema, req.body ?? {});
+    const result = await devices.createDevice(userId, { label, publicKey, platform });
 
     res
       .status(201)
@@ -69,36 +70,54 @@ export function createPeersRouter(peers: PeerService, requireAuth: RequestHandle
       });
   });
 
+  router.get('/', async (req, res) => {
+    const { userId } = authContext(req);
+    res.json({ devices: await devices.listDevices(userId) });
+  });
+
   /**
-   * Replaces the device's keypair, keeping its id and tunnel address. Run
-   * periodically by the app so a leaked config stops working on its own.
+   * The config for this device. `?serverId=` selects a region; omitting it
+   * gives the default one.
    */
+  router.get('/:id/config', async (req, res) => {
+    const { userId } = authContext(req);
+    const deviceId = parseIdParam(req.params.id);
+    const { serverId } = parseBody(serverQuerySchema, req.query);
+
+    res
+      .set('Cache-Control', 'no-store')
+      .json(await devices.getDeviceConfig(userId, deviceId, serverId));
+  });
+
   router.post('/:id/rotate', peerWriteLimiter, async (req, res) => {
     const { userId } = authContext(req);
-    const peerId = parseIdParam(req.params.id);
+    const deviceId = parseIdParam(req.params.id);
     const { publicKey } = parseBody(rotateKeySchema, req.body ?? {});
 
     res
       .set('Cache-Control', 'no-store')
-      .json(await peers.rotatePeerKey(userId, peerId, publicKey));
-  });
-
-  router.get('/', async (req, res) => {
-    const { userId } = authContext(req);
-    res.json({ peers: await peers.listPeers(userId) });
-  });
-
-  router.get('/:id/config', async (req, res) => {
-    const { userId } = authContext(req);
-    const peerId = parseIdParam(req.params.id);
-    res.set('Cache-Control', 'no-store').json(await peers.getPeerConfig(userId, peerId));
+      .json(await devices.rotateKey(userId, deviceId, publicKey));
   });
 
   router.delete('/:id', peerWriteLimiter, async (req, res) => {
     const { userId } = authContext(req);
-    const peerId = parseIdParam(req.params.id);
-    await peers.revokePeer(userId, peerId);
+    await devices.revokeDevice(userId, parseIdParam(req.params.id));
     res.status(204).end();
+  });
+
+  return router;
+}
+
+/** The region list. Authenticated, but it exposes nothing user-specific. */
+export function createServersRouter(
+  devices: DeviceService,
+  requireAuth: RequestHandler,
+): Router {
+  const router = Router();
+  router.use(requireAuth);
+
+  router.get('/', async (_req, res) => {
+    res.json({ servers: await devices.listServers() });
   });
 
   return router;

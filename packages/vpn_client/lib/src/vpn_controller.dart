@@ -15,29 +15,26 @@ enum VpnAction { idle, preparing, connecting, disconnecting }
 
 class VpnController extends ChangeNotifier {
   VpnController({
-    required PeerRepository peers,
+    required DeviceRepository devices,
     required DeviceStore store,
     required Tunnel tunnel,
     required String deviceLabel,
     String devicePlatform = 'unknown',
     Duration keyRotationInterval = const Duration(days: 7),
-  }) : _peers = peers,
+  }) : _devices = devices,
        _store = store,
        _tunnel = tunnel,
        _deviceLabel = deviceLabel,
        _devicePlatform = devicePlatform,
        _keyRotationInterval = keyRotationInterval;
 
-  final PeerRepository _peers;
+  final DeviceRepository _devices;
   final DeviceStore _store;
   final Tunnel _tunnel;
 
   /// Supplied by the app, which is the only layer that knows what platform it
   /// is running on. Keeps dart:io out of this package.
   final String _deviceLabel;
-
-  /// Which kind of machine this is, so the device list can tell five entries
-  /// apart. Supplied by the app for the same reason as the label.
   final String _devicePlatform;
 
   /// How old a device key may get before it is replaced on the next connect.
@@ -49,13 +46,31 @@ class VpnController extends ChangeNotifier {
   TunnelStage _stage = TunnelStage.disconnected;
   VpnAction _action = VpnAction.idle;
   String? _error;
-  Peer? _device;
+  Device? _device;
+  List<VpnServer> _servers = const [];
+  int? _selectedServerId;
   bool _initialized = false;
 
   TunnelStage get stage => _stage;
   VpnAction get action => _action;
   String? get error => _error;
-  Peer? get device => _device;
+  Device? get device => _device;
+
+  /// Regions the account can connect through. Empty until [initialize].
+  List<VpnServer> get servers => _servers;
+
+  /// The region the next connect will use. Null means "whatever the server
+  /// considers default", which is what a client that has never chosen wants.
+  int? get selectedServerId => _selectedServerId;
+
+  VpnServer? get selectedServer {
+    final id = _selectedServerId;
+    final matches = _servers.where(
+      (server) => id == null ? server.isDefault : server.id == id,
+    );
+    if (matches.isNotEmpty) return matches.first;
+    return _servers.isEmpty ? null : _servers.first;
+  }
 
   bool get isConnected => _stage == TunnelStage.connected;
   bool get isBusy => _action != VpnAction.idle || isBusyStage(_stage);
@@ -75,9 +90,8 @@ class VpnController extends ChangeNotifier {
 
   Future<void> initialize() async {
     if (_initialized) {
-      // Reached again when a second account signs in on the same launch; the
-      // tunnel is already wired, but the device panel must be repopulated.
-      await _loadDevice();
+      // Reached again when a second account signs in on the same launch.
+      await _loadAccount();
       return;
     }
     _initialized = true;
@@ -97,20 +111,41 @@ class VpnController extends ChangeNotifier {
       _error = error.message;
     }
 
-    await _loadDevice();
+    await _loadAccount();
     notifyListeners();
   }
 
-  Future<void> _loadDevice() async {
-    final peerId = await _store.readPeerId();
-    if (peerId == null) return;
+  Future<void> _loadAccount() async {
+    // Restore the region the user chose last time before anything can connect.
+    _selectedServerId = await _store.readSelectedServerId();
+
     try {
-      final matches = (await _peers.list()).where((p) => p.id == peerId);
-      _device = matches.isEmpty ? null : matches.first;
-      notifyListeners();
+      _servers = await _devices.servers();
     } on ApiException {
-      // Offline at launch is fine; connect() will resolve it properly.
+      // Offline at launch is fine; connect() resolves it properly.
     }
+
+    final deviceId = await _store.readPeerId();
+    if (deviceId == null) return;
+    try {
+      final matches = (await _devices.list()).where((d) => d.id == deviceId);
+      _device = matches.isEmpty ? null : matches.first;
+    } on ApiException {
+      // Same.
+    }
+    notifyListeners();
+  }
+
+  /// Picks the region the next connect uses. Reconnects if already connected,
+  /// because a region change that does nothing until the user notices would be
+  /// worse than a brief interruption.
+  Future<void> selectServer(int? serverId) async {
+    if (_selectedServerId == serverId) return;
+    _selectedServerId = serverId;
+    await _store.saveSelectedServerId(serverId);
+    notifyListeners();
+
+    if (isConnected) await connect();
   }
 
   /// Registers this device if needed and returns a config with the private key
@@ -120,22 +155,22 @@ class VpnController extends ChangeNotifier {
   /// sent, so the private key exists in exactly one place: this machine's
   /// secure storage.
   Future<({String conf, String endpoint})> _prepareConfig() async {
-    final peerId = await _store.readPeerId();
+    final deviceId = await _store.readPeerId();
     final privateKey = await _store.readPeerPrivateKey();
 
-    if (peerId != null && privateKey != null) {
+    if (deviceId != null && privateKey != null) {
       try {
-        final config = await _peers.config(peerId);
+        final config = await _devices.config(deviceId, serverId: _selectedServerId);
 
         // The server's idea of our key must match ours. A mismatch means a
         // rotation was interrupted or storage was restored from a backup —
         // the tunnel would silently never handshake, so re-key instead.
         final storedPublicKey = await _store.readPeerPublicKey();
         final keyIsOrphaned =
-            storedPublicKey != null && storedPublicKey != config.peer.publicKey;
+            storedPublicKey != null && storedPublicKey != config.device.publicKey;
 
         if (keyIsOrphaned || await _keyIsStale()) {
-          final rotated = await _rotateKey(peerId);
+          final rotated = await _rotateKey(deviceId);
           if (rotated != null) return rotated;
           if (keyIsOrphaned) {
             // Rotation failed and the stored key is known-dead: starting the
@@ -149,7 +184,7 @@ class VpnController extends ChangeNotifier {
           }
         }
 
-        _device = config.peer;
+        _device = config.device;
         return (conf: config.resolveConf(privateKey), endpoint: config.endpoint);
       } on ApiException catch (error) {
         // Revoked from another device, or the account was reset.
@@ -163,23 +198,36 @@ class VpnController extends ChangeNotifier {
 
   Future<({String conf, String endpoint})> _registerDevice() async {
     final pair = await WireGuardKeys.generate();
-    final created = await _peers.create(
-      deviceLabel: _deviceLabel,
+    final created = await _devices.create(
+      label: _deviceLabel,
       publicKey: pair.publicKey,
       platform: _devicePlatform,
     );
 
     // Persist before anything else: the server has no copy to fall back on.
     await _store.saveDevice(
-      peerId: created.peer.id,
+      peerId: created.device.id,
       privateKey: pair.privateKey,
       publicKey: pair.publicKey,
     );
-    _device = created.peer;
+    _device = created.device;
+
+    // Registration answers with the default region. If the user had already
+    // picked another one, fetch that instead of silently connecting elsewhere.
+    if (_selectedServerId != null && _selectedServerId != created.serverId) {
+      final chosen = await _devices.config(
+        created.device.id,
+        serverId: _selectedServerId,
+      );
+      return (
+        conf: chosen.resolveConf(pair.privateKey),
+        endpoint: chosen.endpoint,
+      );
+    }
 
     return (
       conf: created.conf.replaceFirst(
-        PeerConfig.privateKeyPlaceholder,
+        DeviceConfig.privateKeyPlaceholder,
         pair.privateKey,
       ),
       endpoint: created.endpoint,
@@ -196,17 +244,26 @@ class VpnController extends ChangeNotifier {
 
   /// Best effort by design: a rotation failure must never stop the user from
   /// connecting with the key they already have.
-  Future<({String conf, String endpoint})?> _rotateKey(int peerId) async {
+  Future<({String conf, String endpoint})?> _rotateKey(int deviceId) async {
     try {
       final pair = await WireGuardKeys.generate();
-      final config = await _peers.rotateKey(peerId, publicKey: pair.publicKey);
+      final config = await _devices.rotateKey(deviceId, publicKey: pair.publicKey);
 
       await _store.saveDevice(
-        peerId: peerId,
+        peerId: deviceId,
         privateKey: pair.privateKey,
         publicKey: pair.publicKey,
       );
-      _device = config.peer;
+      _device = config.device;
+
+      // Rotation answers with the default region; honour the user's choice.
+      if (_selectedServerId != null && _selectedServerId != config.serverId) {
+        final chosen = await _devices.config(deviceId, serverId: _selectedServerId);
+        return (
+          conf: chosen.resolveConf(pair.privateKey),
+          endpoint: chosen.endpoint,
+        );
+      }
 
       return (
         conf: config.resolveConf(pair.privateKey),
@@ -218,7 +275,7 @@ class VpnController extends ChangeNotifier {
   }
 
   Future<void> connect() async {
-    if (isBusy) return;
+    if (_action != VpnAction.idle) return;
 
     _action = VpnAction.preparing;
     _error = null;
@@ -271,19 +328,19 @@ class VpnController extends ChangeNotifier {
     try {
       await _tunnel.stop();
     } catch (_) {
-      // Nothing running, or the platform refused. Never block sign-out on this.
+      // Nothing running, or the platform refused. Never block sign-out.
     }
   }
 
   Future<void> _revokeCurrentDevice() async {
-    final peerId = await _store.readPeerId();
-    if (peerId != null) await _peers.revoke(peerId);
+    final deviceId = await _store.readPeerId();
+    if (deviceId != null) await _devices.revoke(deviceId);
     await _store.clearDevice();
     _device = null;
   }
 
   /// Revokes this device server-side and forgets its key. The next connect
-  /// registers a fresh peer.
+  /// registers a fresh device.
   Future<void> forgetDevice() async {
     if (isBusy) return;
 
@@ -295,7 +352,7 @@ class VpnController extends ChangeNotifier {
       if (isConnected) await _tunnel.stop();
       await _revokeCurrentDevice();
     } on ApiException catch (error) {
-      // A peer the server no longer knows about is already "forgotten".
+      // A device the server no longer knows about is already "forgotten".
       if (error.statusCode == 404) {
         await _store.clearDevice();
         _device = null;
@@ -321,12 +378,14 @@ class VpnController extends ChangeNotifier {
         // Offline or already revoked; sign-out proceeds either way.
       }
     } else if (reason.wipesStoredDevice) {
-      // Account deleted: the server already dropped every peer, so there is
-      // nothing to revoke, but the local key is now unusable.
+      // Account deleted: the server already dropped everything, but the local
+      // key is now unusable.
       await _store.clearDevice();
     }
 
     _device = null;
+    _servers = const [];
+    _selectedServerId = null;
     _error = null;
     _action = VpnAction.idle;
     notifyListeners();

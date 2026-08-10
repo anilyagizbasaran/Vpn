@@ -10,7 +10,7 @@ const BASE: Record<string, string> = {
   NODE_ENV: 'test',
   JWT_ACCESS_SECRET: 'a-sufficiently-long-access-secret',
   JWT_REFRESH_PEPPER: 'a-sufficiently-long-refresh-pepper',
-  WG_MOCK: 'true',
+  WG_SKIP_BOOTSTRAP_NODE: 'true',
 };
 
 const original = { ...process.env };
@@ -34,7 +34,7 @@ describe('valid configuration', () => {
     const env = await loadEnv({});
 
     expect(env.PORT).toBe(3000);
-    expect(env.MAX_PEERS_PER_USER).toBe(5);
+    expect(env.MAX_DEVICES_PER_USER).toBe(5);
     expect(env.WG_INTERFACE).toBe('wg0');
     expect(env.WG_CLIENT_MTU).toBe(1420);
     expect(env.REFRESH_TTL_DAYS).toBe(30);
@@ -46,15 +46,15 @@ describe('valid configuration', () => {
   it('coerces numbers and booleans from strings', async () => {
     const env = await loadEnv({
       PORT: '8080',
-      MAX_PEERS_PER_USER: '3',
-      WG_SUDO: 'true',
-      WG_SYNC_ON_BOOT: 'false',
+      MAX_DEVICES_PER_USER: '3',
+      NODE_POLL_SECONDS: '10',
+      
     });
 
     expect(env.PORT).toBe(8080);
-    expect(env.MAX_PEERS_PER_USER).toBe(3);
-    expect(env.WG_SUDO).toBe(true);
-    expect(env.WG_SYNC_ON_BOOT).toBe(false);
+    expect(env.MAX_DEVICES_PER_USER).toBe(3);
+    expect(env.NODE_POLL_SECONDS).toBe(10);
+    expect(env.WG_ENABLE_PRESHARED_KEY).toBe(false);
   });
 
   it('parses CORS_ORIGINS into a trimmed list', async () => {
@@ -76,8 +76,10 @@ describe('rejected configuration', () => {
     await expect(loadEnv({ PORT: 'http' })).rejects.toThrow(/PORT/);
   });
 
-  it('requires a server public key once the mock is off', async () => {
-    await expect(loadEnv({ WG_MOCK: 'false' })).rejects.toThrow(/WG_SERVER_PUBLIC_KEY/);
+  it('requires a public key for the bootstrap node it is asked to define', async () => {
+    await expect(loadEnv({ WG_SKIP_BOOTSTRAP_NODE: 'false' })).rejects.toThrow(
+      /WG_SERVER_PUBLIC_KEY/,
+    );
   });
 
   it('requires a 32-byte encryption key when preshared keys are enabled', async () => {
@@ -93,20 +95,25 @@ describe('rejected configuration', () => {
   });
 
   it('rejects a boolean written as anything but true/false', async () => {
-    await expect(loadEnv({ WG_SUDO: 'yes' })).rejects.toThrow(/WG_SUDO/);
-    await expect(loadEnv({ WG_SUDO: '1' })).rejects.toThrow(/WG_SUDO/);
+    await expect(loadEnv({ WG_ENABLE_PRESHARED_KEY: 'yes' })).rejects.toThrow(/WG_ENABLE_PRESHARED_KEY/);
+    await expect(loadEnv({ WG_ENABLE_PRESHARED_KEY: '1' })).rejects.toThrow(/WG_ENABLE_PRESHARED_KEY/);
   });
 });
 
 describe('production guard rails', () => {
   const PROD = {
     NODE_ENV: 'production',
-    WG_MOCK: 'false',
+    WG_SKIP_BOOTSTRAP_NODE: 'false',
     WG_SERVER_PUBLIC_KEY: 'c2VydmVycHVibGlja2V5c2VydmVycHVibGlja2V5c2VydmU=',
   };
 
-  it('refuses to start with the mock backend', async () => {
-    await expect(loadEnv({ ...PROD, WG_MOCK: 'true' })).rejects.toThrow(/WG_MOCK must be false/);
+  it('allows production to define no node from the environment', async () => {
+    // A fleet is provisioned with `npm run node:add`, so the env-defined
+    // bootstrap node is a single-install convenience rather than a
+    // requirement — refusing to start without one would be wrong.
+    await expect(
+      loadEnv({ ...PROD, WG_SKIP_BOOTSTRAP_NODE: 'true', WG_SERVER_PUBLIC_KEY: undefined }),
+    ).resolves.toMatchObject({ WG_SKIP_BOOTSTRAP_NODE: true });
   });
 
   it('refuses placeholder secrets copied from .env.example', async () => {
@@ -135,7 +142,7 @@ describe('production guard rails', () => {
     const env = await loadEnv({ ...PROD, TRUST_PROXY: '1' });
 
     expect(env.NODE_ENV).toBe('production');
-    expect(env.WG_MOCK).toBe(false);
+    expect(env.WG_SKIP_BOOTSTRAP_NODE).toBe(false);
     expect(env.TRUST_PROXY).toBe(1);
   });
 });

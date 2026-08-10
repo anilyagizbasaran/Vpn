@@ -1,0 +1,58 @@
+# /etc/systemd/system/vpn-node-agent.service
+#
+# Runs on every VPN node, including the one that also hosts the control plane.
+# The control plane no longer configures WireGuard itself — that is what lets
+# it run unprivileged — so without this service peers exist in the database
+# and nowhere else.
+#
+#   sudo install -m 755 vpn-node-agent /usr/local/bin/
+#   sudo install -m 600 /dev/null /etc/vpn-node-agent.env
+#   sudoedit /etc/vpn-node-agent.env      # paste what `npm run node:add` printed
+#   sudo cp deploy/vpn-node-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vpn-node-agent
+#
+[Unit]
+Description=VPN node agent
+Documentation=https://github.com/your-org/vpn
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+# The interface must exist before the agent can reconcile its peers.
+Requires=wg-quick@wg0.service
+
+[Service]
+Type=simple
+# Holds VPN_CONTROL_PLANE and VPN_NODE_TOKEN. The token authenticates this
+# node to the control plane, so the file is 600 and root-owned.
+EnvironmentFile=/etc/vpn-node-agent.env
+ExecStart=/usr/local/bin/vpn-node-agent
+Restart=always
+RestartSec=5
+
+# --- privileges -------------------------------------------------------------
+# CAP_NET_ADMIN is all `wg set` needs, and ambient capabilities are inherited
+# across exec so the wg child gets it too. The agent never creates or destroys
+# the interface — wg-quick does that at boot — it only edits the peer table.
+User=root
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+
+# --- sandboxing -------------------------------------------------------------
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+# It writes nothing: preshared keys go to a private tmp directory that
+# PrivateTmp already isolates.
+
+# A node that cannot reach the control plane keeps serving the peers it has,
+# so restarting forever is the right behaviour — the alternative is a node
+# that gives up and drifts out of sync silently.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -8,25 +8,12 @@ const ONE_HOUR = 60 * 60 * 1000;
 async function main(): Promise<void> {
   const container = await createContainer();
 
-  if (env.WG_SYNC_ON_BOOT) {
-    // The database is the source of truth. `wg set` state is lost on reboot,
-    // so every live peer is re-applied and anything unknown is removed.
-    try {
-      await container.peers.syncInterface();
-    } catch (error) {
-      logger.error('interface sync failed at boot — peers may be unreachable', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
+  // Nothing to reconcile at boot any more: node agents pull their peer set and
+  // converge on their own. The control plane is a plain web service — no
+  // privileges, no interface, nothing to restore.
   const app = createApp(container);
   const server = app.listen(env.PORT, () => {
-    logger.info('control plane listening', {
-      port: env.PORT,
-      env: env.NODE_ENV,
-      wireguard: container.wg.kind,
-    });
+    logger.info('control plane listening', { port: env.PORT, env: env.NODE_ENV });
   });
 
   const cleanup = setInterval(() => {

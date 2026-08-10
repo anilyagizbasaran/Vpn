@@ -32,7 +32,7 @@ class _DashboardAppState extends State<DashboardApp> {
     api: widget.api,
     store: widget.store,
   );
-  late final PeerRepository _peers = PeerRepository(api: widget.api);
+  late final DeviceRepository _devices = DeviceRepository(api: widget.api);
 
   AccountUser? _user;
   bool _checking = true;
@@ -80,7 +80,7 @@ class _DashboardAppState extends State<DashboardApp> {
         ),
         (_, final AccountUser user) => DevicesPage(
           user: user,
-          peers: _peers,
+          devices: _devices,
           auth: _auth,
           onSignedOut: () => setState(() => _user = null),
         ),

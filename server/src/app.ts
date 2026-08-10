@@ -9,23 +9,24 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { globalLimiter, healthLimiter } from './middleware/rateLimiters.js';
 import { createRequireAuth } from './middleware/requireAuth.js';
 import { createAuthRouter } from './routes/auth.routes.js';
+import { createDevicesRouter, createServersRouter } from './routes/devices.routes.js';
 import { createHealthRouter } from './routes/health.routes.js';
-import { createPeersRouter } from './routes/peers.routes.js';
+import { createNodeRouter } from './routes/node.routes.js';
 import type { AccountService } from './services/accountService.js';
 import type { AuthService } from './services/authService.js';
-import type { PeerService } from './services/peerService.js';
-import type { WireGuardController } from './services/wireguard/index.js';
+import type { DeviceService } from './services/deviceService.js';
+import type { NodeService } from './services/nodeService.js';
 import { logger } from './utils/logger.js';
 
 export interface AppDependencies {
   repos: Repositories;
   auth: AuthService;
   account: AccountService;
-  peers: PeerService;
-  wg: WireGuardController;
+  devices: DeviceService;
+  nodes: NodeService;
 }
 
-export function createApp({ repos, auth, account, peers, wg }: AppDependencies): Express {
+export function createApp({ repos, auth, account, devices, nodes }: AppDependencies): Express {
   const app = express();
 
   // Must match the real number of proxies, otherwise a client can forge
@@ -60,17 +61,24 @@ export function createApp({ repos, auth, account, peers, wg }: AppDependencies):
 
   // Probes are mounted ahead of the global limiter and get their own budget,
   // so an uptime monitor cannot spend the window that real users need.
-  app.use('/', healthLimiter, createHealthRouter(repos, wg));
+  app.use('/', healthLimiter, createHealthRouter(repos));
 
   // Rate limiting runs before body parsing: a request that is going to be
-  // rejected with 429 should not first cost a 32kb JSON parse.
+  // rejected with 429 should not first cost a JSON parse.
   app.use(globalLimiter);
+
+  // Node agents report every peer's counters, so their bodies are far larger
+  // than a user's. Mounted before the tighter global parser.
+  app.use('/node', express.json({ limit: '2mb' }), createNodeRouter(nodes));
+
+  // Configs are a few hundred bytes; nothing legitimate needs more than this.
   app.use(express.json({ limit: '32kb' }));
 
   const requireAuth = createRequireAuth(auth);
 
   app.use('/auth', createAuthRouter(auth, account, requireAuth));
-  app.use('/peers', createPeersRouter(peers, requireAuth));
+  app.use('/devices', createDevicesRouter(devices, requireAuth));
+  app.use('/servers', createServersRouter(devices, requireAuth));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

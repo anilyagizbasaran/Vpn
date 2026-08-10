@@ -4,9 +4,8 @@ import { openDatabase, type Db } from './db/sqlite.js';
 import { createSqliteRepositories } from './db/sqliteRepositories.js';
 import { AccountService } from './services/accountService.js';
 import { AuthService } from './services/authService.js';
-import { PeerService } from './services/peerService.js';
-import { createWireGuardController } from './services/wireguard/index.js';
-import type { WireGuardController } from './services/wireguard/index.js';
+import { DeviceService } from './services/deviceService.js';
+import { NodeService } from './services/nodeService.js';
 import { logger } from './utils/logger.js';
 
 export interface Container {
@@ -14,20 +13,20 @@ export interface Container {
   repos: Repositories;
   auth: AuthService;
   account: AccountService;
-  peers: PeerService;
-  wg: WireGuardController;
+  devices: DeviceService;
+  nodes: NodeService;
   close(): void;
 }
 
 export interface ContainerOptions {
   databasePath?: string;
-  wg?: WireGuardController;
+  /** Skip defining the bootstrap node; tests define their own. */
+  skipBootstrapNode?: boolean;
 }
 
 export async function createContainer(options: ContainerOptions = {}): Promise<Container> {
   const db = openDatabase(options.databasePath ?? env.DATABASE_PATH);
   const repos = createSqliteRepositories(db);
-  const wg = options.wg ?? createWireGuardController();
 
   const auth = new AuthService(repos, {
     accessSecret: env.JWT_ACCESS_SECRET,
@@ -38,8 +37,8 @@ export async function createContainer(options: ContainerOptions = {}): Promise<C
     revokedRetentionDays: env.REFRESH_REVOKED_RETENTION_DAYS,
   });
 
-  const peers = new PeerService(repos, wg, {
-    maxPeersPerUser: env.MAX_PEERS_PER_USER,
+  const devices = new DeviceService(repos, {
+    maxDevicesPerUser: env.MAX_DEVICES_PER_USER,
     enablePresharedKey: env.WG_ENABLE_PRESHARED_KEY,
     pskEncryptionKey: env.PSK_ENCRYPTION_KEY,
     clientAllowedIps: env.WG_CLIENT_ALLOWED_IPS,
@@ -47,47 +46,39 @@ export async function createContainer(options: ContainerOptions = {}): Promise<C
     clientMtu: env.WG_CLIENT_MTU,
   });
 
-  const account = new AccountService(repos, auth, peers);
+  const nodes = new NodeService(repos, {
+    tokenPepper: env.JWT_REFRESH_PEPPER,
+    pskEncryptionKey: env.PSK_ENCRYPTION_KEY,
+    pollSeconds: env.NODE_POLL_SECONDS,
+  });
 
-  await registerServerFromEnv(repos, wg);
+  const account = new AccountService(repos, auth, devices);
 
-  return {
-    db,
-    repos,
-    auth,
-    account,
-    peers,
-    wg,
-    close: () => db.close(),
-  };
+  if (!(options.skipBootstrapNode ?? env.WG_SKIP_BOOTSTRAP_NODE)) {
+    await defineBootstrapNode(repos);
+  }
+
+  return { db, repos, auth, account, devices, nodes, close: () => db.close() };
 }
 
 /**
- * The `servers` row is derived from .env on every boot. That keeps a single
- * source of truth for operators (edit .env, restart) while still storing the
- * values in the database, where peers can reference them by id.
+ * Defines one node from the environment on every boot.
+ *
+ * A convenience for the common single-node install: edit .env, restart, done.
+ * Additional nodes are added with `npm run node:add`, which is also what mints
+ * their agent token — this path deliberately never touches an existing token,
+ * so a restart cannot lock an agent out.
  */
-async function registerServerFromEnv(
-  repos: Repositories,
-  wg: WireGuardController,
-): Promise<void> {
-  const liveKey = await wg.getInterfacePublicKey();
-  const publicKey = env.WG_SERVER_PUBLIC_KEY.trim() || liveKey || '';
-
+async function defineBootstrapNode(repos: Repositories): Promise<void> {
+  const publicKey = env.WG_SERVER_PUBLIC_KEY.trim();
   if (publicKey === '') {
-    logger.error('no server public key available from env or the live interface');
+    logger.error('no bootstrap node public key; skipping node definition');
     return;
   }
 
-  if (liveKey && env.WG_SERVER_PUBLIC_KEY.trim() && liveKey !== env.WG_SERVER_PUBLIC_KEY.trim()) {
-    // Clients would receive a config that can never handshake. Loud on purpose.
-    logger.error('WG_SERVER_PUBLIC_KEY does not match the live interface key', {
-      interface: wg.interfaceName,
-    });
-  }
-
-  await repos.servers.upsertByRegion({
+  const server = await repos.servers.upsertByRegion({
     region: env.WG_REGION,
+    displayName: env.WG_DISPLAY_NAME || env.WG_REGION,
     publicKey,
     endpoint: env.WG_ENDPOINT,
     listenPort: env.WG_LISTEN_PORT,
@@ -96,5 +87,14 @@ async function registerServerFromEnv(
     serverAddress: env.WG_SERVER_ADDRESS,
     dns: env.WG_DNS,
     isDefault: true,
+    status: 'active',
+    agentTokenHash: null,
   });
+
+  if (!server.agentTokenHash) {
+    // Without an agent the peers exist in the database and nowhere else.
+    logger.warn('the bootstrap node has no agent token; run `npm run node:add` to mint one', {
+      region: server.region,
+    });
+  }
 }

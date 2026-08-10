@@ -1,4 +1,12 @@
-import type { Peer, RefreshTokenRecord, User, VpnServer } from './types.js';
+import type {
+  Device,
+  Peer,
+  PeerUsage,
+  RefreshTokenRecord,
+  ServerStatus,
+  User,
+  VpnServer,
+} from './types.js';
 
 /**
  * Every method is async even though the SQLite driver is synchronous. The
@@ -16,48 +24,111 @@ export interface UserRepository {
   findByEmail(email: string): Promise<User | null>;
   findById(id: number): Promise<User | null>;
   /**
-   * Hard delete for erasure requests. Peers and refresh tokens go with it via
-   * ON DELETE CASCADE — nothing about the account survives. Returns false if
-   * the row was already gone.
+   * Hard delete for erasure requests. Devices, peers and refresh tokens go
+   * with it via ON DELETE CASCADE. Returns false if the row was already gone.
    */
   delete(id: number): Promise<boolean>;
 }
 
+export interface CreateServerInput {
+  region: string;
+  displayName: string;
+  publicKey: string;
+  endpoint: string;
+  listenPort: number;
+  interfaceName: string;
+  addressPoolCidr: string;
+  serverAddress: string;
+  dns: string;
+  isDefault: boolean;
+  status: ServerStatus;
+  agentTokenHash: string | null;
+}
+
 export interface ServerRepository {
   list(): Promise<VpnServer[]>;
+  /** Nodes that may receive new address allocations. */
+  listAllocatable(): Promise<VpnServer[]>;
   findById(id: number): Promise<VpnServer | null>;
+  findByRegion(region: string): Promise<VpnServer | null>;
+  /** Authenticates a node agent. Returns null when the token is unknown. */
+  findByAgentTokenHash(tokenHash: string): Promise<VpnServer | null>;
   getDefault(): Promise<VpnServer | null>;
-  /** Creates or updates the single server described by the environment. */
-  upsertByRegion(input: Omit<VpnServer, 'id' | 'createdAt'>): Promise<VpnServer>;
+  upsertByRegion(input: CreateServerInput): Promise<VpnServer>;
+  setAgentTokenHash(id: number, tokenHash: string): Promise<void>;
+  setStatus(id: number, status: ServerStatus): Promise<void>;
+  /** Records a successful agent sync. */
+  recordHeartbeat(input: {
+    id: number;
+    agentVersion: string;
+    reportedPublicKey: string;
+    seenAt: string;
+  }): Promise<void>;
+}
+
+export interface CreateDeviceInput {
+  userId: number;
+  label: string;
+  platform: string;
+  publicKey: string;
+}
+
+export interface DeviceRepository {
+  /** Throws `UniqueConstraintError` if the public key is already registered. */
+  create(input: CreateDeviceInput): Promise<Device>;
+  findById(id: number): Promise<Device | null>;
+  listActiveByUser(userId: number): Promise<Device[]>;
+  countActiveByUser(userId: number): Promise<number>;
+  revoke(id: number, revokedAt: string): Promise<boolean>;
+  /** Swaps in a new keypair, keeping the device identity and its addresses. */
+  rotateKey(id: number, publicKey: string, rotatedAt: string): Promise<Device>;
 }
 
 export interface CreatePeerInput {
-  userId: number;
+  deviceId: number;
   serverId: number;
-  publicKey: string;
-  presharedKeyEnc: string | null;
   allowedIp: string;
+  presharedKeyEnc: string | null;
+}
+
+/** A peer joined to the device that owns it, which is how agents see them. */
+export interface PeerWithDevice extends Peer {
+  publicKey: string;
   deviceLabel: string;
-  platform: string;
 }
 
 export interface PeerRepository {
-  /** Throws `UniqueConstraintError` if the IP or key is taken by a live peer. */
+  /** Throws `UniqueConstraintError` if the address or binding is taken. */
   create(input: CreatePeerInput): Promise<Peer>;
   findById(id: number): Promise<Peer | null>;
-  listActiveByUser(userId: number): Promise<Peer[]>;
-  listActiveByServer(serverId: number): Promise<Peer[]>;
-  listAllActive(): Promise<Peer[]>;
-  countActiveByUser(userId: number): Promise<number>;
-  /** Allowed IPs currently held by non-revoked peers on a server. */
+  findActiveForDeviceOnServer(deviceId: number, serverId: number): Promise<Peer | null>;
+  listActiveByDevice(deviceId: number): Promise<Peer[]>;
+  /** Everything an agent needs to build its interface. */
+  listActiveByServerWithDevice(serverId: number): Promise<PeerWithDevice[]>;
+  /** Addresses currently held by live peers on a server. */
   activeAllowedIps(serverId: number): Promise<string[]>;
-  /** Returns false when the peer was already revoked or does not exist. */
   revoke(id: number, revokedAt: string): Promise<boolean>;
+  revokeAllForDevice(deviceId: number, revokedAt: string): Promise<number>;
+}
+
+export interface UsageReport {
+  publicKey: string;
+  rxBytes: number;
+  txBytes: number;
+  lastHandshakeAt: string | null;
+}
+
+export interface UsageRepository {
   /**
-   * Swaps in a new public key, keeping the peer's id and address so the device
-   * identity survives. Throws `UniqueConstraintError` if the key is taken.
+   * Folds a batch of agent readings into the running totals.
+   *
+   * WireGuard's counters restart whenever a peer is re-added, so a reading
+   * lower than the last one is treated as a reset rather than as a negative
+   * delta — otherwise a reconnect would silently erase a user's usage.
    */
-  rotateKey(id: number, publicKey: string, rotatedAt: string): Promise<Peer>;
+  record(serverId: number, reports: UsageReport[], observedAt: string): Promise<number>;
+  findByPeerId(peerId: number): Promise<PeerUsage | null>;
+  totalsForDevice(deviceId: number): Promise<{ rxBytes: number; txBytes: number }>;
 }
 
 export interface RefreshTokenRepository {
@@ -83,6 +154,8 @@ export interface RefreshTokenRepository {
 export interface Repositories {
   users: UserRepository;
   servers: ServerRepository;
+  devices: DeviceRepository;
   peers: PeerRepository;
+  usage: UsageRepository;
   refreshTokens: RefreshTokenRepository;
 }

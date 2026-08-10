@@ -40,11 +40,23 @@ const envSchema = z.object({
   JWT_REFRESH_PEPPER: z.string().min(16),
   REFRESH_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   JWT_ISSUER: z.string().min(1).default('vpn-control-plane'),
+  /** Revoked refresh tokens are kept this long for reuse-detection forensics. */
+  REFRESH_REVOKED_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
 
-  MAX_PEERS_PER_USER: z.coerce.number().int().min(1).max(100).default(5),
+  MAX_DEVICES_PER_USER: z.coerce.number().int().min(1).max(100).default(5),
   WG_ENABLE_PRESHARED_KEY: boolean(false),
   PSK_ENCRYPTION_KEY: z.string().default(''),
 
+  /**
+   * How often node agents sync, and so the worst-case delay before a revoked
+   * device stops working anywhere. The control plane never pushes.
+   */
+  NODE_POLL_SECONDS: z.coerce.number().int().min(2).max(300).default(10),
+
+  // The bootstrap node. Defining a server here is a convenience for a
+  // single-node install; more nodes are added with `npm run node:add`.
+  WG_REGION: z.string().min(1).default('de-fra'),
+  WG_DISPLAY_NAME: z.string().default(''),
   WG_INTERFACE: z.string().min(1).default('wg0'),
   WG_SERVER_PUBLIC_KEY: z.string().default(''),
   WG_ENDPOINT: z.string().min(3).default('vpn.example.com:51820'),
@@ -52,19 +64,15 @@ const envSchema = z.object({
   WG_ADDRESS_POOL: z.string().min(9).default('10.8.0.0/24'),
   WG_SERVER_ADDRESS: z.string().min(7).default('10.8.0.1'),
   WG_DNS: z.string().default('1.1.1.1, 1.0.0.1'),
-  WG_REGION: z.string().min(1).default('de-fra'),
+  /** What the client routes into the tunnel. `0.0.0.0/0,::/0` = full tunnel. */
   WG_CLIENT_ALLOWED_IPS: z.string().min(1).default('0.0.0.0/0,::/0'),
   WG_PERSISTENT_KEEPALIVE: z.coerce.number().int().min(0).max(3600).default(25),
   // Matches the server interface MTU. Without it the client picks its own,
   // which on some mobile networks silently blackholes large packets: ping
   // works, HTTPS stalls. 0 omits the line.
   WG_CLIENT_MTU: z.coerce.number().int().min(0).max(1500).default(1420),
-  /** Revoked refresh tokens are kept this long for reuse-detection forensics. */
-  REFRESH_REVOKED_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
-
-  WG_SUDO: boolean(false),
-  WG_MOCK: boolean(false),
-  WG_SYNC_ON_BOOT: boolean(true),
+  /** Skip defining a bootstrap node; every node is added with the CLI. */
+  WG_SKIP_BOOTSTRAP_NODE: boolean(false),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -81,9 +89,11 @@ function parseEnv(source: NodeJS.ProcessEnv): Env {
   const env = parsed.data;
   const problems: string[] = [];
 
-  // A real interface needs a real server key; the mock backend invents one.
-  if (!env.WG_MOCK && env.WG_SERVER_PUBLIC_KEY.trim() === '') {
-    problems.push('WG_SERVER_PUBLIC_KEY is required when WG_MOCK=false');
+  if (!env.WG_SKIP_BOOTSTRAP_NODE && env.WG_SERVER_PUBLIC_KEY.trim() === '') {
+    problems.push(
+      'WG_SERVER_PUBLIC_KEY is required to define the bootstrap node ' +
+        '(set WG_SKIP_BOOTSTRAP_NODE=true to add every node with the CLI instead)',
+    );
   }
   if (env.WG_ENABLE_PRESHARED_KEY && !/^[0-9a-fA-F]{64}$/.test(env.PSK_ENCRYPTION_KEY)) {
     problems.push(
@@ -97,12 +107,9 @@ function parseEnv(source: NodeJS.ProcessEnv): Env {
     if (env.JWT_REFRESH_PEPPER.includes('CHANGE_ME')) {
       problems.push('JWT_REFRESH_PEPPER still holds the placeholder value');
     }
-    if (env.WG_MOCK) {
-      problems.push('WG_MOCK must be false in production');
-    }
     if (env.TRUST_PROXY === 0) {
       // Not fatal: the API can legitimately be exposed directly. But behind
-      // Caddy/nginx this collapses every client into one rate-limit bucket.
+      // Caddy this collapses every client into one rate-limit bucket.
       process.emitWarning(
         'TRUST_PROXY=0 in production. Set it to the number of reverse proxies ' +
           '(Caddy/nginx = 1), or per-IP rate limiting will treat all traffic as one client.',
@@ -111,7 +118,9 @@ function parseEnv(source: NodeJS.ProcessEnv): Env {
   }
 
   if (problems.length > 0) {
-    throw new Error(`Invalid environment configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+    throw new Error(
+      `Invalid environment configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
+    );
   }
 
   return env;

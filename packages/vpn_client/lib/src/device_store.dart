@@ -23,5 +23,9 @@ abstract interface class DeviceStore {
     DateTime? keyCreatedAt,
   });
 
+  /// The region the user last chose. Null means the server's default.
+  Future<int?> readSelectedServerId();
+  Future<void> saveSelectedServerId(int? serverId);
+
   Future<void> clearDevice();
 }

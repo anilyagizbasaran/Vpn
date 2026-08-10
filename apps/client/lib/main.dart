@@ -43,7 +43,7 @@ void main() {
   // have to know about each other: ending a session must also tear down the
   // tunnel it authorised.
   final vpn = VpnController(
-    peers: PeerRepository(api: api),
+    devices: DeviceRepository(api: api),
     store: store,
     tunnel: tunnel,
     deviceLabel: AppConfig.deviceLabel,

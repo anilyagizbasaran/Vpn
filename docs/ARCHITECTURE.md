@@ -1,7 +1,7 @@
 # Mimari
 
 Bu dosya sistemin **neden** böyle kurulduğunu anlatır. Nasıl kurulacağı
-[README](../README.md)'de.
+[GO-LIVE.md](GO-LIVE.md)'de, ayar ve sorun giderme [TUNING.md](TUNING.md)'de.
 
 ## Temel ilke
 
@@ -9,19 +9,21 @@ Hiçbir bileşenin ele geçirilmesi tek başına yeterli olmasın.
 
 | Bileşen | Ne biliyor | Ne bilmiyor |
 |---|---|---|
-| Control plane (`server/`) | E-posta, parola hash'i, **açık anahtarlar** | Özel anahtarları, trafiğin içeriğini |
-| Uygulama (`apps/client`) | Hesap kimliği, **özel anahtar** | Ağ arayüzüne dokunamaz |
-| Daemon (`vpnd/`) | Ağ arayüzünü değiştirebilir | Hesabı, token'ı — API'ye hiç çıkmaz |
+| Control plane (`server/`) | E-posta, parola hash'i, **açık anahtarlar** | Özel anahtarları; WireGuard'a hiç dokunmaz |
+| Node ajanı (`vpn-node-agent`) | Interface'i değiştirebilir | Hesabı, token'ı, kullanıcıları |
+| İstemci (`apps/client`) | Hesap kimliği, **özel anahtar** | Ağ arayüzüne dokunamaz (masaüstünde) |
+| Masaüstü servisi (`vpnd`) | Yerel tüneli kurar | Hesabı — API'ye hiç çıkmaz |
 | Eklenti (`extension/`) | Tünel açık mı kapalı mı | Config göremez, üretemez |
 
 Sonuçları:
 
 - Sunucu diski ele geçse trafiği kimse çözemez; özel anahtarlar orada yok.
-- vpnd ele geçse hesap alınamaz; API'ye hiç çıkmıyor.
-- Uygulama ele geçse root olunamaz; arayüz ayrıcalıksız çalışıyor.
-- Eklenti ele geçse config alınamaz; köprü `up` metodunu dışarı açmıyor.
+- Control plane ele geçse hiçbir node'da komut çalıştırılamaz; dışarı aramıyor.
+- Bir node ele geçse hesaplar alınamaz; node token'ı sadece kendi peer setini
+  görüyor.
+- `vpnd` ele geçse hesap alınamaz, GUI ele geçse root olunamaz.
 
-Bedeli açık: **özel anahtar kaybolursa peer kurtarılamaz.** Sunucuda kopyası
+Bedeli açık: **özel anahtar kaybolursa cihaz kurtarılamaz.** Sunucuda kopyası
 yok. Uygulama bunu cihazı silip yenisini kaydederek çözüyor.
 
 ## İki düzlem
@@ -31,12 +33,15 @@ KONTROL DÜZLEMİ                          VERİ DÜZLEMİ
 ───────────────                          ────────────
 İstemci ──HTTPS──> Caddy ──> Node        İstemci ──UDP 51820──> WireGuard
           :443            :3000                                  (wg0)
-                            │
-                         SQLite
+                            │                                      ▲
+                         SQLite                                    │
+                            ▲                              vpn-node-agent
+                            └──── POST /node/sync ──────────────────┘
+                                  (ajan çeker, 10sn)
 ```
 
-Trafik API'ye hiç uğramaz. Node çökerse mevcut tüneller çalışmaya devam eder;
-sadece yeni cihaz eklenemez.
+Trafik API'ye hiç uğramaz. Control plane çökerse mevcut tüneller çalışmaya
+devam eder — ajan son gördüğü peer setini koruyor.
 
 ## Katmanlar
 
@@ -45,7 +50,7 @@ Tek kural: **üst katman alt katmanı bilir, alt katman üstü asla bilmez.**
 ```
 L4  apps/client   apps/dashboard   extension/       ← birbirini tanımaz
     ────────────────────────────────────────────
-L3  vpn_client    oturum · cihaz kimliği · rotasyon politikası
+L3  vpn_client    oturum · cihaz kimliği · rotasyon · bölge seçimi
 L2  vpn_tunnel    tünel sözleşmesi (saf Dart)
       ├─ vpn_tunnel_mobile    wireguard_flutter_plus
       └─ vpn_tunnel_desktop   vpnd IPC istemcisi
@@ -57,17 +62,36 @@ L0  vpn_crypto    X25519               (bağımlılıksız)
 
 1. **`SessionStore` / `DeviceStore`** — `vpn_api` Flutter'sız ve `dart:io`suz
    kalsın diye. Karşılığı somut: `apps/dashboard` aynı API istemcisini web'de
-   derliyor. Ayrıca cihaz özel anahtarı mimari olarak API katmanının
-   erişemeyeceği yerde — oturum temizliği sunucunun yeniden üretemeyeceği bir
-   kimliği yanlışlıkla silemez.
+   derliyor, ve CI her push'ta o build'i çalıştırarak sınırı koruyor. Ayrıca
+   cihaz özel anahtarı mimari olarak API katmanının erişemeyeceği yerde.
 2. **`TunnelStage`** — plugin'in enum'u yerine kendi sözlüğümüz. Masaüstünde
    plugin yerine daemon istemcisi koymak **tek paketi** etkiledi.
 3. **`ApiClient` transport hatalarını `dart:io` olmadan yakalıyor** — web'de
    derlenebilmesi için zorunluydu; yan etkisi olarak TLS hatalarını da
    kapsıyor, ki eskiden kaçırıyorduk.
 
-CI'da dashboard'un web build'i bu sınırların bekçisi: birisi `vpn_api`'ye
-Flutter eklerse build kırılır.
+## Veri modeli
+
+```
+users
+ └─ devices        tek keypair · kotanın saydığı şey · kullanıcının gördüğü şey
+      └─ peers     cihazı bir sunucuya bağlayan adres tahsisi
+           └─ peer_usage
+servers (nodes)    agent_token_hash · status · last_seen_at · reported_public_key
+```
+
+**Neden `devices` ve `peers` ayrı:** başta peer'ın kendisi cihazdı. İkinci
+sunucuda bu kırılıyor — bir cihazın ulaşabildiği her sunucuda adresi olması
+gerekiyor ve bunları beş cihaz limitine saymak, üç bölgenin tek telefonla
+kotayı tüketmesi demek olurdu.
+
+**Neden tek anahtar, çok sunucu:** WireGuard (istemci, sunucu) çifti bazında
+doğruluyor, aynı istemci anahtarının birden çok sunucuyla eşleşmesi normal.
+Bölge değiştirmeyi bir round trip değil, config'de tek satır yapan şey bu.
+Mullvad'ın modeli.
+
+> Çoklu sunucu şu an kullanılmıyor. Şema, node protokolü ve istemcideki bölge
+> seçimi hazır; ikinci node eklemek `npm run node:add` ve bir ajan kurulumu.
 
 ## Uçtan uca akış
 
@@ -75,39 +99,55 @@ Flutter eklerse build kırılır.
 1. KAYIT       POST /auth/register → access (JWT 15dk) + refresh (opaque 30g)
 
 2. CİHAZ       İstemci X25519 çifti üretir; özel anahtar secure storage'a
-               POST /peers {publicKey, platform}
-               Sunucu: kota (5) → havuzdan en düşük boş IP → DB satırı
-                       → wg set wg0 peer <pub> allowed-ips 10.8.0.2/32
+               POST /devices {publicKey, platform}
+               Control plane: kota → her aktif node'da havuzdan adres → DB
                ← .conf, ama PrivateKey = <PRIVATE_KEY>
 
-3. TÜNEL       İstemci placeholder'ı kendi anahtarıyla değiştirir
+3. YAYILMA     Ajan POST /node/sync ile peer setini çeker (≤10sn)
+               Tek bir `wg set` çağrısıyla uygular
+
+4. TÜNEL       İstemci placeholder'ı kendi anahtarıyla değiştirir
                mobil:     doğrudan VpnService / NetworkExtension
                masaüstü:  AF_UNIX soketi üzerinden vpnd'ye verir
 
-4. ROTASYON    Anahtar 7 günden eskiyse POST /peers/:id/rotate
-               Tek `wg set` çağrısında eski düşer, yeni girer
-               Cihaz id'si, etiketi, IP'si değişmez; kota yemez
+5. ROTASYON    Anahtar 7 günden eskiyse POST /devices/:id/rotate
+               Cihaz id'si, etiketi ve **tüm adresleri** aynı kalır
 ```
 
 ## Neden bu kararlar
 
-**Sunucu tarafında DB kaynak doğrusudur.** `wg set` state'i reboot'ta kaybolur.
-Açılışta `syncInterface()` DB'deki aktif peer'ları tek çağrıyla yeniden uygular.
-Peer eklerken önce DB (adres rezervasyonu), sonra `wg`; silerken tersi. Ters
-sıra iptal edilmiş bir anahtarı geri diriltebilirdi.
+**Control plane WireGuard'a hiç dokunmuyor.** Anahtarları istemci üretiyor,
+PSK 32 rastgele bayt, peer'ları ajanlar uyguluyor. Geriye `wg`'ye ihtiyaç
+duyan hiçbir şey kalmadı — API ayrıcalıksız, container'da, WireGuard kurulu
+olmayan bir makinede çalışabiliyor.
 
-**İstemci açık anahtarını da saklar.** Bağlanırken sunucununkiyle karşılaştırır.
-Uyuşmazsa (yarıda kalmış rotasyon, yedekten geri yükleme) anahtarı yeniler —
-yoksa tünel sonsuza kadar "connecting"de kalır ve hiçbir yerde hata görünmez.
+**Node'lar çeker, control plane hiç dışarı aramaz.** Push modeli control
+plane'de her node'un root'unu veren bir kimlik gerektirirdi ve her node'un
+oradan erişilebilir olmasını isterdi. Çekme modelinde node WireGuard portu
+dışında hiçbir şey açmıyor.
+
+**Bunun bedeli:** iptal **anında değil**, bir poll aralığında yayılıyor
+(`NODE_POLL_SECONDS`, varsayılan 10sn). Bilinçli takas.
+
+**Ajan durum tutmuyor.** Control plane ne cevaplarsa doğru odur; bir saat
+offline kalan node ilk başarılı sync'te kendine geliyor. Reboot için ayrı bir
+kurtarma yolu yok — aynı yol.
+
+**Sync başarısız olursa ajan peer tablosuna dokunmuyor.** Control plane
+kesintisini tam kesintiye çevirmek yanlış yön.
+
+**İstemci açık anahtarını da saklıyor.** Bağlanırken sunucununkiyle
+karşılaştırıyor; uyuşmazsa (yarıda kalmış rotasyon, yedekten geri yükleme)
+anahtarı yeniliyor — yoksa tünel sonsuza kadar "connecting"de kalır ve hiçbir
+yerde hata görünmez.
 
 **Masaüstünde ayrıcalıklı daemon.** GUI'yi yükseltilmiş çalıştırmak Flutter'ın
-tüm saldırı yüzeyini root'a taşır. Mullvad, Tailscale ve diğerleri aynı şekilde
-bölüyor.
+tüm saldırı yüzeyini root'a taşır. Mullvad ve Tailscale aynı şekilde bölüyor.
 
-**Daemon config'i allowlist'ler.** wg-quick `PostUp` satırlarını root olarak
-çalıştırıyor. Sokete ayrıcalıksız bir süreç ulaşabildiği için, anahtar
-allowlist'i olmasa yerel herhangi bir kullanıcı root shell alırdı. Blocklist
-değil allowlist: wg-quick'e ileride eklenecek ve bir şey çalıştıran bir anahtar
+**`vpnd` config'i allowlist'liyor.** wg-quick `PostUp` satırlarını root olarak
+çalıştırıyor ve sokete ayrıcalıksız bir süreç ulaşabiliyor; anahtar allowlist'i
+olmasa yerel herhangi bir kullanıcı root shell alırdı. Blocklist değil
+allowlist: wg-quick'e ileride eklenecek ve bir şey çalıştıran bir anahtar
 varsayılan olarak reddedilsin.
 
 **Soket AF_UNIX, loopback TCP değil.** Localhost TCP'ye makinedeki her süreç
@@ -115,13 +155,13 @@ ulaşır, ACL uygulanamaz ve tarayıcıdan POST atılabilir — Tailscale'in Win
 istemcisi tam bu yüzden zafiyet aldı. Dart'ın Windows'ta AF_UNIX desteklediğini
 ölçtük (`packages/vpn_tunnel/tool/af_unix_probe.dart`), varsaymadık.
 
-**Eklenti config gönderemez.** Köprü tam üç eyleme izin verir: status, connect,
-disconnect. "Connect", daemon'un o oturumda zaten kabul ettiği config'i yeniden
-uygular; hiç bağlanılmamışsa "uygulamayı aç" der.
+**Eklenti config gönderemez.** Köprü tam üç eyleme izin veriyor: status,
+connect, disconnect. "Connect", daemon'un o oturumda zaten kabul ettiği
+config'i yeniden uyguluyor.
 
 **Bilinmeyen durum "kapalı" değildir.** Eklenti rozeti daemon'a ulaşamazsa `?`
-gösterir. Korumasızken "kapalı" demek doğru; bilinmezken "kapalı" demek
-yanıltıcı.
+gösteriyor, node'un liveness'ı bilinmiyorsa `online: false`. Korumasızken
+"kapalı" demek doğru; bilinmezken "kapalı" demek yanıltıcı.
 
 ## Test stratejisi
 
@@ -129,25 +169,29 @@ Gerçek yolları test ediyoruz, mock'lanmış kopyaları değil:
 
 | Ne | Nasıl |
 |---|---|
-| `wg` CLI | `CommandRunner` enjeksiyonu — tam argv doğrulanıyor |
+| `wg` CLI (ajan) | `Runner` enjeksiyonu — tam argv doğrulanıyor |
 | `flutter_secure_storage` | Platform kanalı mock'lanıyor, gerçek `SecureStore` çalışıyor |
 | vpnd IPC | Dart tarafında gerçek AF_UNIX soketi üzerinden sahte daemon |
+| Node protokolü | Gerçek HTTP, iki node ile izolasyon ve eş zamanlı tahsis |
 | Anahtar türetme | **RFC 7748 §6.1 test vektörleri** — kendi kendine tutarlılık değil |
 | Native messaging | Gerçek çerçeveleme ile stdio round-trip |
 
 Anahtar türetme neden vektörlere sabitlendi: yanlış türetmede tünel hiçbir hata
 vermeden asla handshake yapmaz. Kendi kendini doğrulayan bir test bunu kaçırır.
 
+`acceptance.mjs --check-wg` mock'un asla yakalayamayacağı tek şeyi yakalıyor:
+cihaz oluşturup anahtarın `wg show`'da **belirmesini bekliyor**, yani API →
+veritabanı → ajan → `wg` zincirinin tamamını sınıyor.
+
 ## Bilerek yapılmayanlar
 
 1. **Kod imzalama** — para ve evrak işi. Windows OV sertifikası ~$200-400/yıl,
-   Apple Developer $99/yıl + notarization. İmzasız yapılar SmartScreen uyarısı
-   verir; indirme sayfası bunu gizlemiyor.
-2. **E-posta doğrulama** — SMTP sağlayıcı seçimi ürün kararı. Yarım bir akış hiç
-   olmamasından kötü.
+   Apple Developer $99/yıl + notarization.
+2. **E-posta doğrulama** — SMTP sağlayıcı seçimi ürün kararı. Yarım bir akış
+   hiç olmamasından kötü.
 3. **Ödeme/abonelik** — kayıt olan herkes 5 cihaz alıyor.
 4. **iOS Network Extension** — entitlement başvurusu gerekiyor, haftalar sürer.
 5. **Masaüstünde kill switch** — daemon firewall kurallarını yazabilir ama
    yazmıyor. Android'de OS'un yerleşiği kullanılıyor.
-6. **Çoklu sunucu** — şema hazır (`servers` tablosu + `server_id` FK), seçim
-   arayüzü yok.
+6. **Bölge seçici UI** — `VpnController.selectServer()` hazır, ekranda düğmesi
+   yok. Çoklu sunucu kullanılmaya başlanınca eklenecek.

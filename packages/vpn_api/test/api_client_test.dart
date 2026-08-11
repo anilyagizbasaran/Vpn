@@ -41,22 +41,22 @@ void main() {
 
   group('request building', () {
     test('attaches the bearer token and sends JSON', () async {
-      http.enqueue('POST', '/peers', status: 201, body: {'ok': true});
+      http.enqueue('POST', '/devices', status: 201, body: {'ok': true});
 
-      await api.post('/peers', body: {'deviceLabel': 'Phone'});
+      await api.post('/devices', body: {'deviceLabel': 'Phone'});
 
       final sent = http.requests.single;
       expect(sent.method, 'POST');
-      expect(sent.url, '$base/peers');
+      expect(sent.url, '$base/devices');
       expect(sent.bearer, 'access-1');
       expect(sent.headers['content-type'], 'application/json');
       expect(sent.json['deviceLabel'], 'Phone');
     });
 
     test('omits the body and content-type on a plain GET', () async {
-      http.enqueue('GET', '/peers', body: {'peers': []});
+      http.enqueue('GET', '/devices', body: {'peers': []});
 
-      await api.get('/peers');
+      await api.get('/devices');
 
       expect(http.requests.single.body, isEmpty);
       expect(http.requests.single.headers.containsKey('content-type'), isFalse);
@@ -76,18 +76,18 @@ void main() {
         httpClient: http,
         baseUrl: '$base///',
       );
-      http.enqueue('GET', '/peers', body: {'peers': []});
+      http.enqueue('GET', '/devices', body: {'peers': []});
 
-      await client.get('/peers');
+      await client.get('/devices');
 
-      expect(http.requests.single.url, '$base/peers');
+      expect(http.requests.single.url, '$base/devices');
     });
 
     test('fails fast when there is no access token', () async {
       await store.clearSession();
 
       await expectLater(
-        api.get('/peers'),
+        api.get('/devices'),
         throwsA(isA<ApiException>().having((e) => e.statusCode, 'status', 401)),
       );
       expect(http.requests, isEmpty);
@@ -98,7 +98,7 @@ void main() {
     test('surfaces the backend error code and message', () async {
       http.enqueue(
         'POST',
-        '/peers',
+        '/devices',
         status: 409,
         body: {
           'error': {
@@ -110,7 +110,7 @@ void main() {
       );
 
       await expectLater(
-        api.post('/peers'),
+        api.post('/devices'),
         throwsA(
           isA<ApiException>()
               .having((e) => e.code, 'code', 'peer_quota_exceeded')
@@ -138,15 +138,15 @@ void main() {
     });
 
     test('treats an empty 200 body as an empty map', () async {
-      http.enqueue('GET', '/peers');
-      await expectLater(api.get('/peers'), completion(isEmpty));
+      http.enqueue('GET', '/devices');
+      await expectLater(api.get('/devices'), completion(isEmpty));
     });
 
     test('maps a dead network to a readable message', () async {
       http.failWith = const SocketException('connection refused');
 
       await expectLater(
-        api.get('/peers'),
+        api.get('/devices'),
         throwsA(isA<ApiException>().having((e) => e.code, 'code', 'network_error')),
       );
     });
@@ -157,29 +157,29 @@ void main() {
       http.failWith = const HandshakeException('certificate verify failed');
 
       await expectLater(
-        api.get('/peers'),
+        api.get('/devices'),
         throwsA(isA<ApiException>().having((e) => e.code, 'code', 'network_error')),
       );
     });
 
     test('returns an empty map for 204 instead of failing to parse', () async {
-      http.enqueue('DELETE', '/peers/1', status: 204);
-      await expectLater(api.delete('/peers/1'), completion(isEmpty));
+      http.enqueue('DELETE', '/devices/1', status: 204);
+      await expectLater(api.delete('/devices/1'), completion(isEmpty));
     });
   });
 
   group('401 handling', () {
     test('refreshes once and replays the original request', () async {
-      http.enqueue('GET', '/peers', status: 401, body: {'error': {'code': 'unauthorized'}});
+      http.enqueue('GET', '/devices', status: 401, body: {'error': {'code': 'unauthorized'}});
       http.enqueue('POST', '/auth/refresh', body: refreshBody());
-      http.enqueue('GET', '/peers', body: {'peers': []});
+      http.enqueue('GET', '/devices', body: {'peers': []});
 
-      final result = await api.get('/peers');
+      final result = await api.get('/devices');
 
       expect(result['peers'], isEmpty);
       expect(http.callCount('POST', '/auth/refresh'), 1);
       // The replay carries the new token, not the stale one.
-      expect(http.requests.last.path, '/peers');
+      expect(http.requests.last.path, '/devices');
       expect(http.requests.last.bearer, 'access-2');
       // Rotated tokens are persisted for the next launch.
       expect(await store.readAccessToken(), 'access-2');
@@ -187,10 +187,10 @@ void main() {
     });
 
     test('sends the stored refresh token, not the access token', () async {
-      http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+      http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
       http.enqueue('POST', '/auth/refresh', status: 401, body: {'error': {}});
 
-      await api.get('/peers').catchError((_) => <String, dynamic>{});
+      await api.get('/devices').catchError((_) => <String, dynamic>{});
 
       final refreshCall = http.requests.firstWhere((r) => r.path == '/auth/refresh');
       expect(refreshCall.json['refreshToken'], 'refresh-1');
@@ -199,14 +199,14 @@ void main() {
     });
 
     test('does not retry a second time if the replay also 401s', () async {
-      http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+      http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
       http.enqueue('POST', '/auth/refresh', body: refreshBody());
-      http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+      http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
 
-      await expectLater(api.get('/peers'), throwsA(isA<ApiException>()));
+      await expectLater(api.get('/devices'), throwsA(isA<ApiException>()));
 
       // Two attempts, one refresh — never an infinite loop.
-      expect(http.callCount('GET', '/peers'), 2);
+      expect(http.callCount('GET', '/devices'), 2);
       expect(http.callCount('POST', '/auth/refresh'), 1);
     });
 
@@ -214,10 +214,10 @@ void main() {
       var signalled = 0;
       api.onSessionExpired = () => signalled += 1;
 
-      http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+      http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
       http.enqueue('POST', '/auth/refresh', status: 401, body: {'error': {}});
 
-      await expectLater(api.get('/peers'), throwsA(isA<ApiException>()));
+      await expectLater(api.get('/devices'), throwsA(isA<ApiException>()));
 
       expect(signalled, 1);
       expect(await store.readAccessToken(), isNull);
@@ -226,9 +226,9 @@ void main() {
 
     test('does not attempt a refresh when there is no refresh token', () async {
       store.values.remove('refresh');
-      http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+      http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
 
-      await expectLater(api.get('/peers'), throwsA(isA<ApiException>()));
+      await expectLater(api.get('/devices'), throwsA(isA<ApiException>()));
       expect(http.callCount('POST', '/auth/refresh'), 0);
     });
   });
@@ -236,38 +236,38 @@ void main() {
   group('single-flight refresh', () {
     test('three parallel 401s trigger exactly one refresh', () async {
       for (var i = 0; i < 3; i += 1) {
-        http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+        http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
       }
       // Only one refresh response is queued on purpose: a second refresh would
       // fall through to the not-stubbed 500 and fail the test.
       http.enqueue('POST', '/auth/refresh', body: refreshBody());
       for (var i = 0; i < 3; i += 1) {
-        http.enqueue('GET', '/peers', body: {'peers': []});
+        http.enqueue('GET', '/devices', body: {'peers': []});
       }
 
       final results = await Future.wait([
-        api.get('/peers'),
-        api.get('/peers'),
-        api.get('/peers'),
+        api.get('/devices'),
+        api.get('/devices'),
+        api.get('/devices'),
       ]);
 
       expect(results, hasLength(3));
       // The whole point: the backend revokes the session if a rotated refresh
       // token is presented twice.
       expect(http.callCount('POST', '/auth/refresh'), 1);
-      expect(http.callCount('GET', '/peers'), 6);
+      expect(http.callCount('GET', '/devices'), 6);
     });
 
     test('a later request can refresh again after the first flight ends', () async {
       Future<void> cycle(String access, String refresh) async {
-        http.enqueue('GET', '/peers', status: 401, body: {'error': {}});
+        http.enqueue('GET', '/devices', status: 401, body: {'error': {}});
         http.enqueue(
           'POST',
           '/auth/refresh',
           body: refreshBody(access: access, refresh: refresh),
         );
-        http.enqueue('GET', '/peers', body: {'peers': []});
-        await api.get('/peers');
+        http.enqueue('GET', '/devices', body: {'peers': []});
+        await api.get('/devices');
       }
 
       await cycle('access-2', 'refresh-2');

@@ -220,10 +220,13 @@ if [[ -f "$DATA_DIR/.env" ]]; then
     pass ".env has no placeholder secrets"
   fi
 
-  if grep -qE '^\s*WG_MOCK\s*=\s*true' "$DATA_DIR/.env"; then
-    fail "WG_MOCK=true in production" "no real tunnel will be configured"
+  # The control plane stopped touching WireGuard when the node agent took over,
+  # so a sudoers rule here is left over from an older install. It is standing
+  # privilege nothing uses, which is the kind that survives for years.
+  if [[ -f /etc/sudoers.d/wgapi ]]; then
+    fail "/etc/sudoers.d/wgapi still grants the API sudo" "re-run setup-wg.sh, which now removes it"
   else
-    pass "WG_MOCK is off"
+    pass "the API holds no sudo rule"
   fi
 
   if grep -qE '^\s*TRUST_PROXY\s*=\s*0' "$DATA_DIR/.env"; then

@@ -6,12 +6,12 @@
 #
 [Unit]
 Description=WireGuard VPN control plane
-Documentation=https://github.com/your-org/vpn
-After=network-online.target wg-quick@wg0.service
+Documentation=https://github.com/anilyagizbasaran/Vpn
+After=network-online.target
 Wants=network-online.target
-# The API re-applies peers onto the interface at boot, so the interface has
-# to exist first.
-Requires=wg-quick@wg0.service
+# Deliberately no dependency on wg-quick: the control plane never opens the
+# interface, so it must stay up when WireGuard is down. It can run on a host
+# with no WireGuard installed at all.
 
 [Service]
 Type=simple
@@ -24,22 +24,23 @@ Restart=on-failure
 RestartSec=3
 
 # --- privileges -------------------------------------------------------------
-# CAP_NET_ADMIN is all `wg` needs to read and modify the interface, and ambient
-# capabilities are inherited across exec, so the `wg` child gets it too. This
-# is why the service can keep NoNewPrivileges and still manage peers.
-# Requires WG_SUDO=false in .env.
-AmbientCapabilities=CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_ADMIN
+# None. This service issues no commands and opens no sockets but its own
+# listener: peers reach the interface through the node agent, which holds
+# CAP_NET_ADMIN so that nothing else has to. An empty bounding set means the
+# process cannot acquire a capability even if something tries.
+CapabilityBoundingSet=
+AmbientCapabilities=
 NoNewPrivileges=yes
-#
-# Fallback if capabilities are unavailable (containers, odd kernels): comment
-# out the three lines above, set NoNewPrivileges=no, and set WG_SUDO=true —
-# setup-wg.sh already installed /etc/sudoers.d/wgapi limiting the user to the
-# `wg` binary. NoNewPrivileges=yes and sudo are mutually exclusive.
+PrivateDevices=true
+RestrictSUIDSGID=true
+# Only what an HTTP server needs; blocks AF_NETLINK, which is how `wg` talks
+# to the kernel. If this service ever tries to configure WireGuard again, it
+# fails here rather than succeeding quietly.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 # --- sandboxing -------------------------------------------------------------
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

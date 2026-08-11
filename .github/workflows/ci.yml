@@ -83,6 +83,45 @@ jobs:
       - name: Build the web dashboard
         run: cd apps/dashboard && flutter build web --release
 
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          docker build -t vpn-control-plane:ci ./server
+          docker build -t vpn-node-agent:ci ./vpnd
+
+      # Building is the cheap half. better-sqlite3 is a native module, and one
+      # compiled against the wrong libc builds perfectly and then throws at
+      # require() — so the image has to be started and its own health check
+      # waited on before this job means anything.
+      - name: The API image starts and reports healthy
+        run: |
+          docker run -d --name api \
+            -e JWT_ACCESS_SECRET="$(head -c 32 /dev/urandom | base64 -w0)" \
+            -e JWT_REFRESH_PEPPER="$(head -c 32 /dev/urandom | base64 -w0)" \
+            -e WG_SKIP_BOOTSTRAP_NODE=true \
+            vpn-control-plane:ci
+          for _ in $(seq 1 30); do
+            state=$(docker inspect --format '{{.State.Health.Status}}' api)
+            case "$state" in
+              healthy)   echo "healthy"; exit 0 ;;
+              unhealthy) break ;;
+            esac
+            sleep 2
+          done
+          echo "--- the image never became healthy ---"
+          docker logs api
+          exit 1
+
+      # The agent shells out to `wg`; without wireguard-tools in the image it
+      # starts, syncs, and fails on every single peer.
+      - name: The agent image carries wg
+        run: docker run --rm --entrypoint wg vpn-node-agent:ci --version
+
   extension:
     name: Browser extension
     runs-on: ubuntu-latest

@@ -300,7 +300,7 @@ async function main() {
       body: { label: 'Acceptance device', publicKey: keys.publicKey, platform: 'linux' },
       expect: 201,
     });
-    peer = body.device;
+    device = body.device;
     assertEqual(body.device.publicKey, keys.publicKey, 'publicKey');
     assertEqual(body.device.platform, 'linux', 'platform');
   });
@@ -339,9 +339,16 @@ async function main() {
   }
 
   await check('the address came from the configured pool', async () => {
-    const pool = ready.server?.endpoint;
-    assert(/^\d+\.\d+\.\d+\.\d+\/32$/.test(device.locations[0].allowedIp), `allowedIp looks wrong: ${device.locations[0].allowedIp}`);
-    assert(pool, 'no server endpoint reported');
+    // /ready answers with `nodes`, not `server` — the old field name survived
+    // the split of devices from peers and quietly failed this check.
+    const location = device.locations[0];
+    assert(
+      /^\d+\.\d+\.\d+\.\d+\/32$/.test(location.allowedIp),
+      `allowedIp looks wrong: ${location.allowedIp}`,
+    );
+    // A location with no endpoint renders a config that can never hand shake,
+    // and nothing downstream would say why.
+    assert(location.endpoint, `no endpoint reported for region ${location.region}`);
   });
 
   await check('rotating keeps the device identity and drops the old key', async () => {
@@ -352,8 +359,12 @@ async function main() {
       expect: 200,
     });
 
-    assertEqual(body.device.id, device.id, 'peer id changed');
-    assertEqual(body.device.allowedIp, device.locations[0].allowedIp, 'address changed');
+    assertEqual(body.device.id, device.id, 'device id changed');
+    assertEqual(
+      body.device.locations[0].allowedIp,
+      device.locations[0].allowedIp,
+      'address changed',
+    );
     assertEqual(body.device.publicKey, rotated.publicKey, 'publicKey');
     assert(body.device.keyRotatedAt, 'keyRotatedAt was not set');
 
@@ -417,7 +428,7 @@ async function main() {
       break;
     }
 
-    assert(limit !== null, `the limit was never reached after ${created} devices — MAX_PEERS_PER_USER may be unset`);
+    assert(limit !== null, `the limit was never reached after ${created} devices — MAX_DEVICES_PER_USER may be unset`);
     assertEqual(created, limit, 'devices created before the limit fired');
   });
 
@@ -429,7 +440,7 @@ async function main() {
     });
 
     const { body: after } = await call('GET', '/devices', { token: alice.accessToken });
-    assertEqual(after.peers.length, before.peers.length - 1, 'device count after revoke');
+    assertEqual(after.devices.length, before.devices.length - 1, 'device count after revoke');
 
     await call('POST', '/devices', {
       token: alice.accessToken,
@@ -464,7 +475,10 @@ async function main() {
   await check('a device label with control characters is rejected', async () => {
     await call('POST', '/devices', {
       token: alice.accessToken,
-      body: { deviceLabel: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey },
+      // `label`, not `deviceLabel` — the wrong field name meant the server saw
+      // no label at all, happily created the device, and this check passed
+      // without ever exercising the thing it exists to prove.
+      body: { label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey },
       expect: 400,
     });
   });

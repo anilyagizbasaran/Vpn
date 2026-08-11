@@ -17,13 +17,27 @@ class _SignInPageState extends State<SignInPage> {
   final _password = TextEditingController();
 
   bool _busy = false;
+  bool _registering = false;
   String? _error;
+
+  /// The server rejects anything shorter, and finding that out from a 400
+  /// after typing a password is worse than being told up front.
+  static const _minPasswordLength = 10;
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
     super.dispose();
+  }
+
+  void _toggleMode() {
+    setState(() {
+      _registering = !_registering;
+      // The old error described the other mode and would read as a failure of
+      // the one just switched to.
+      _error = null;
+    });
   }
 
   Future<void> _submit() async {
@@ -35,10 +49,10 @@ class _SignInPageState extends State<SignInPage> {
     });
 
     try {
-      final user = await widget.auth.login(
-        email: _email.text.trim(),
-        password: _password.text,
-      );
+      final email = _email.text.trim();
+      final user = _registering
+          ? await widget.auth.register(email: email, password: _password.text)
+          : await widget.auth.login(email: email, password: _password.text);
       widget.onSignedIn(user);
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -69,7 +83,7 @@ class _SignInPageState extends State<SignInPage> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Manage your devices',
+                    _registering ? 'Create your account' : 'Manage your devices',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w600,
@@ -77,8 +91,11 @@ class _SignInPageState extends State<SignInPage> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Sign in to see the devices on your account and remove any '
-                    'you no longer have.',
+                    _registering
+                        ? 'One account covers every device. Add them from the '
+                              'app once you have signed in there.'
+                        : 'Sign in to see the devices on your account and '
+                              'remove any you no longer have.',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
@@ -108,14 +125,28 @@ class _SignInPageState extends State<SignInPage> {
                     controller: _password,
                     enabled: !_busy,
                     obscureText: true,
-                    autofillHints: const [AutofillHints.password],
+                    autofillHints: _registering
+                        ? const [AutofillHints.newPassword]
+                        : const [AutofillHints.password],
                     onFieldSubmitted: (_) => _submit(),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Password',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
+                      helperText: _registering
+                          ? 'At least $_minPasswordLength characters'
+                          : null,
                     ),
-                    validator: (v) =>
-                        (v ?? '').isEmpty ? 'Enter your password' : null,
+                    validator: (v) {
+                      final value = v ?? '';
+                      if (value.isEmpty) return 'Enter your password';
+                      // Only on the way in: an existing account may predate
+                      // this rule, and refusing to even try would lock its
+                      // owner out of a page that would have let them in.
+                      if (_registering && value.length < _minPasswordLength) {
+                        return 'At least $_minPasswordLength characters';
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 22),
 
@@ -130,13 +161,23 @@ class _SignInPageState extends State<SignInPage> {
                             width: 18,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Text('Sign in'),
+                        : Text(_registering ? 'Create account' : 'Sign in'),
                   ),
 
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _busy ? null : _toggleMode,
+                    child: Text(
+                      _registering
+                          ? 'I already have an account'
+                          : 'Create a new account',
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
                   Text(
-                    'Accounts are created in the app. This page cannot connect '
-                    'to the VPN — a browser cannot open a tunnel.',
+                    'This page cannot connect to the VPN — a browser cannot '
+                    'open a tunnel. Install the app to connect.',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,

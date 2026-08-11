@@ -9,7 +9,7 @@ import { unauthorized } from '../utils/errors.js';
  * The signature check alone is not enough: an access token stays
  * cryptographically valid for its full 15 minutes, so without this lookup a
  * deleted or disabled account would keep working until the token expired —
- * including for a `POST /peers` whose user_id no longer exists.
+ * including for a `POST /devices` whose user_id no longer exists.
  *
  * The cost is one primary-key read per authenticated request against an
  * in-process SQLite database. That is the right trade at this scale; if the

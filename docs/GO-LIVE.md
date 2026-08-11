@@ -33,12 +33,33 @@ Kırmızı olmaması gerekenler: interface, forwarding, MASQUERADE, port.
 
 ## 2. Control plane
 
+İki yol var, ikisi de aynı sonucu veriyor. `.env` her ikisinde de aynı dosya:
+`setup-wg.sh`'in bastığı `WG_*` değerleri + `npm run keygen` çıktısı, artı
+`NODE_ENV=production`, `TRUST_PROXY=1`, `WG_SKIP_BOOTSTRAP_NODE=true`.
+
+**a) systemd ile**
+
 ```bash
-# .env'i doldur: setup-wg.sh'in bastığı WG_* + npm run keygen çıktısı
-# NODE_ENV=production, TRUST_PROXY=1, WG_SKIP_BOOTSTRAP_NODE=true
 sudo systemctl enable --now vpn-api
 sudo systemctl reload caddy
 ```
+
+**b) Docker ile** — Caddy'yi de birlikte getirir
+
+```bash
+# server/deploy/Caddyfile.docker içindeki api.example.com'u kendi domain'inle
+# değiştir; Caddy açılışta Let's Encrypt'e o isim için sertifika soruyor.
+docker compose up -d
+docker compose ps        # api "healthy" olmalı
+```
+
+Control plane'in artık hiçbir ayrıcalığa ihtiyacı olmaması bunu mümkün kılan
+şey: container `cap_drop: ALL`, `read_only` ve `no-new-privileges` ile
+çalışıyor, yazdığı tek yer veritabanı volume'ü.
+
+WireGuard container'da **değil**. `wg0` host'un kernel arayüzü; `setup-wg.sh`
+onu ayağa kaldırıyor ve `docker compose down` dahil her şeye rağmen ayakta
+kalıyor. Peer'lar container yeniden kurulunca kaybolmuyor.
 
 **Doğrula:**
 
@@ -62,6 +83,12 @@ npm run node:add -- --region de-fra --display "Frankfurt" \
   --endpoint vpn.senin-domain.com:51820 \
   --public-key "$(sudo cat /etc/wireguard/server_public.key)" \
   --pool 10.8.0.0/24 --default
+
+# Docker kullanıyorsan aynı komut:
+docker compose exec api node scripts/add-node.mjs --region de-fra \
+  --display "Frankfurt" --endpoint vpn.senin-domain.com:51820 \
+  --public-key "$(sudo cat /etc/wireguard/server_public.key)" \
+  --pool 10.8.0.0/24 --default
 ```
 
 Token bir kez basılıyor. Node'da:
@@ -76,6 +103,17 @@ EOF
 sudo chmod 600 /etc/vpn-node-agent.env
 sudo cp deploy/vpn-node-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now vpn-node-agent
+```
+
+Docker ile de çalıştırılabilir ama **systemd tercih edilmeli.** Ajan `wg0`'ı
+görmek için host ağını, değiştirmek için `CAP_NET_ADMIN`'i istiyor; ikisi
+birlikte container'a systemd unit'iyle aynı erişimi veriyor, unit'in
+sandbox'ı (`ProtectSystem`, `ProtectKernelTunables`, `RestrictNamespaces`)
+olmadan. Yine de gerekiyorsa:
+
+```bash
+cp vpnd/.env.example vpnd/.env    # token'ı yapıştır
+docker compose --profile agent up -d agent
 ```
 
 **Doğrula:**

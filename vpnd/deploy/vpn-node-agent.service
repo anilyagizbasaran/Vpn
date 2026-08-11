@@ -13,7 +13,7 @@
 #
 [Unit]
 Description=VPN node agent
-Documentation=https://github.com/your-org/vpn
+Documentation=https://github.com/anilyagizbasaran/Vpn
 After=network-online.target wg-quick@wg0.service
 Wants=network-online.target
 # The interface must exist before the agent can reconcile its peers.

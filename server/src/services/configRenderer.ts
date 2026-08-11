@@ -1,6 +1,6 @@
 /**
  * The token that stands in for the client private key in configs served after
- * creation. The server never stores private keys, so `GET /peers/:id/config`
+ * creation. The server never stores private keys, so `GET /devices/:id/config`
  * cannot fill this in — the app substitutes the key it saved locally.
  */
 export const PRIVATE_KEY_PLACEHOLDER = '<PRIVATE_KEY>';

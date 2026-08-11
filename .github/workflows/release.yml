@@ -18,6 +18,22 @@ permissions:
   contents: write
 
 jobs:
+  # API_BASE_URL is baked into the client at build time. Unset, the builds
+  # still succeed and ship pointing nowhere — which reaches the user as
+  # "connecting…" and nothing else. Failing here costs one job and says what
+  # is actually wrong.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require API_BASE_URL
+        run: |
+          if [ -z "${{ vars.API_BASE_URL }}" ]; then
+            echo "::error::Repository variable API_BASE_URL is not set."
+            echo "Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+
   daemon:
     name: vpnd (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -66,6 +82,7 @@ jobs:
 
   android:
     name: Android APK
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,10 +106,17 @@ jobs:
 
   desktop:
     name: Desktop GUI (${{ matrix.os }})
+    needs: preflight
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        # `target` names the artifact after what a user is downloading rather
+        # than after the runner image: vpn-client-windows-x64.tar.gz, not
+        # desktop-windows-latest.
+        include:
+          - { os: windows-latest, target: windows-x64 }
+          - { os: macos-latest, target: macos-arm64 }
+          - { os: ubuntu-latest, target: linux-x64 }
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -111,10 +135,30 @@ jobs:
           flutter build ${{ runner.os == 'Windows' && 'windows' || runner.os == 'macOS' && 'macos' || 'linux' }} \
             --release --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
 
+      # Flutter puts each desktop target somewhere different, and only the
+      # Windows one looks like `<platform>/x64/runner/Release`.
+      #
+      # Archiving here rather than uploading the directory: the publish job
+      # attaches `artifacts/**/*` to the release, and a directory expands to
+      # every loose DLL as its own release asset. The download page needs one
+      # file per platform, not thirty.
+      - name: Package
+        shell: bash
+        working-directory: apps/client
+        run: |
+          case "${{ runner.os }}" in
+            Windows) src=build/windows/x64/runner/Release ;;
+            macOS)   src=build/macos/Build/Products/Release ;;
+            *)       src=build/linux/x64/release/bundle ;;
+          esac
+          [ -d "$src" ] || { echo "::error::no build output at $src"; exit 1; }
+          tar -czf "vpn-client-${{ matrix.target }}.tar.gz" -C "$src" .
+
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.os }}
-          path: apps/client/build/*/x64/runner/Release/
+          name: desktop-${{ matrix.target }}
+          path: apps/client/vpn-client-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
 
   dashboard:
     name: Web dashboard
@@ -127,7 +171,7 @@ jobs:
       - name: Build
         working-directory: apps/dashboard
         # Empty base URL means same-origin, which is what it gets when Caddy
-        # serves the dashboard and proxies /auth and /peers.
+        # serves the dashboard and proxies /auth and /devices.
         run: flutter build web --release
       - uses: actions/upload-artifact@v4
         with:

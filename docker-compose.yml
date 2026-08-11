@@ -1,0 +1,130 @@
+# Control plane + TLS terminator, and optionally the node agent.
+#
+#   cp server/.env.example server/.env     # then fill it in — see docs/GO-LIVE.md
+#   docker compose up -d
+#   docker compose exec api node scripts/add-node.mjs --help
+#
+# WireGuard itself is NOT here. wg0 is a kernel interface belonging to the
+# host, brought up by server/scripts/setup-wg.sh, and it stays up across every
+# rebuild and restart of these containers. Peers survive a `compose down`.
+
+name: vpn
+
+services:
+  api:
+    build:
+      context: ./server
+    image: vpn-control-plane:local
+    restart: unless-stopped
+    # Node handles SIGTERM itself, but PID 1 also has to reap the zombies that
+    # any exec'd child leaves behind.
+    init: true
+
+    env_file: ./server/.env
+    # Set after env_file, so these win over whatever the file says. Each one is
+    # a property of running in this compose stack rather than a preference:
+    # the database lives on the volume, and Caddy is exactly one proxy hop.
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /data/vpn.db
+      TRUST_PROXY: "1"
+      PORT: "3000"
+
+    volumes:
+      - api-data:/data
+
+    # No `ports:`. The API is reachable only from the compose network, so Caddy
+    # is the sole path in and TLS is not optional by accident.
+    expose:
+      - "3000"
+    networks: [edge]
+
+    # It writes to /data and nowhere else, so everything else can be read-only.
+    # If this ever starts failing, the cause is code that writes outside /data,
+    # which is worth knowing rather than working around.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # Caddy carries the static site and the dashboard inside its own image rather
+  # than mounting them: the dashboard is a Flutter build, so something has to
+  # compile it, and baking it in means the running stack has no build step and
+  # no host directory it depends on.
+  caddy:
+    build:
+      context: .
+      dockerfile: website/Dockerfile
+    image: vpn-web:local
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Your domain in production; the default serves plain HTTP on :80 and
+      # never contacts Let's Encrypt, which is what a laptop wants.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./server/deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing this volume means asking
+      # Let's Encrypt for everything again, and their rate limits are per week.
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # Off by default: `docker compose --profile agent up -d`.
+  #
+  # Read vpnd/Dockerfile before enabling this. Host networking plus
+  # CAP_NET_ADMIN gives the container the same reach over host networking that
+  # the systemd unit has, without the unit's sandboxing. On a normal VPS,
+  # vpnd/deploy/vpn-node-agent.service is the better deployment.
+  agent:
+    profiles: [agent]
+    build:
+      context: ./vpnd
+    image: vpn-node-agent:local
+    restart: unless-stopped
+    init: true
+
+    # wg0 lives in the host's network namespace; a bridge network cannot see
+    # it. This also means the agent reaches the control plane over its public
+    # HTTPS URL, not the compose network — set VPN_CONTROL_PLANE accordingly.
+    network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt:
+      - no-new-privileges:true
+
+    # Holds VPN_CONTROL_PLANE and VPN_NODE_TOKEN, printed once by
+    # `node scripts/add-node.mjs`. Gitignored: it is a credential.
+    env_file: ./vpnd/.env
+
+    # Preshared keys are written to a temporary file and passed to `wg` by
+    # path; keeping that on tmpfs means they never touch a disk.
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+networks:
+  edge:
+
+volumes:
+  api-data:
+  caddy-data:
+  caddy-config:

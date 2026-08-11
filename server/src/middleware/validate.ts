@@ -16,7 +16,7 @@ export function parseBody<T extends z.ZodType>(schema: T, body: unknown): z.infe
 }
 
 /**
- * Parses a numeric path parameter such as `/peers/:id`. Takes `unknown`
+ * Parses a numeric path parameter such as `/devices/:id`. Takes `unknown`
  * because Express types params as `string | string[] | undefined` — a repeated
  * parameter arrives as an array and must be rejected, not coerced.
  */

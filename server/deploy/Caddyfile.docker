@@ -1,0 +1,64 @@
+# Mounted at /etc/caddy/Caddyfile by docker-compose.yml.
+#
+# One origin serves three things: the download page, the account dashboard, and
+# the API. That is deliberate — a same-origin dashboard needs no CORS
+# configuration at all, and CORS misconfiguration is a whole class of bug this
+# simply does not have.
+#
+# SITE_ADDRESS is the one thing that differs between a laptop and production.
+# Set it to your domain and Caddy fetches a Let's Encrypt certificate on boot;
+# leave it at the default `:80` and it serves plain HTTP without ever touching
+# ACME, which is what local testing needs and what a wrong hostname would
+# otherwise spend rate limit discovering.
+#
+#   SITE_ADDRESS=api.example.com docker compose up -d
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# API routes first — a path that reaches the file server instead of the
+	# control plane returns 404 with no hint as to why.
+	#
+	# Listed explicitly rather than proxying everything that is not a file:
+	# a route added to the server later should have to be added here too,
+	# instead of silently becoming public through a catch-all.
+	@api path /auth/* /devices/* /devices /servers /servers/* /node/* /health /ready
+	handle @api {
+		# Caddy sets X-Forwarded-For itself, which is why the API runs with
+		# TRUST_PROXY=1. Keep those two in sync or per-IP rate limiting
+		# breaks: every request buckets as the proxy and one client can lock
+		# out everyone.
+		reverse_proxy api:3000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# The dashboard is a single-page app: unknown paths under it are routes
+	# the app resolves itself, not missing files.
+	handle /dashboard/* {
+		root * /srv
+		try_files {path} /dashboard/index.html
+		file_server
+	}
+
+	handle {
+		root * /srv
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The download page reads releases.json on every load to find the current
+	# version. Cached, it would keep advertising the previous release.
+	@manifest path /releases.json
+	header @manifest Cache-Control "no-cache"
+
+	log {
+		output stdout
+		format json
+	}
+}

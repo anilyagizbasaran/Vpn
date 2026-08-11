@@ -216,10 +216,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Unprivileged API user + narrow sudoers rule
+# 6. Unprivileged API user
 # ---------------------------------------------------------------------------
-# The Node process must never run as root. It only needs `wg` (to add/remove
-# peers and read the dump), so it gets exactly that one binary via sudo.
+# The control plane no longer touches WireGuard at all — the node agent applies
+# peers, and that is the only thing on this box that needs CAP_NET_ADMIN. So
+# the API user gets nothing: no sudo, no capabilities, no group membership.
 log "API service user '$API_USER'"
 if id -u "$API_USER" >/dev/null 2>&1; then
   skip "user $API_USER already exists"
@@ -228,17 +229,16 @@ else
   ok "created system user $API_USER"
 fi
 
-WG_BIN="$(command -v wg)"
+# Earlier versions of this script granted the API passwordless sudo to `wg`.
+# Anyone who ran one still has that rule sitting in /etc/sudoers.d, and it is
+# now pure standing privilege — nothing would ever use it. Remove it rather
+# than leaving it for a later audit to find.
 SUDOERS_FILE="/etc/sudoers.d/wgapi"
-SUDOERS_WANT="$API_USER ALL=(root) NOPASSWD: $WG_BIN"
-if [[ -f "$SUDOERS_FILE" ]] && grep -qxF "$SUDOERS_WANT" "$SUDOERS_FILE"; then
-  skip "$SUDOERS_FILE already correct"
+if [[ -f "$SUDOERS_FILE" ]]; then
+  rm -f "$SUDOERS_FILE"
+  ok "removed $SUDOERS_FILE — the API has not needed wg since the agent took over"
 else
-  printf '%s\n' "$SUDOERS_WANT" > "$SUDOERS_FILE.tmp"
-  chmod 440 "$SUDOERS_FILE.tmp"
-  visudo -cqf "$SUDOERS_FILE.tmp" || { rm -f "$SUDOERS_FILE.tmp"; die "generated sudoers file is invalid"; }
-  mv "$SUDOERS_FILE.tmp" "$SUDOERS_FILE"
-  ok "wrote $SUDOERS_FILE (only '$WG_BIN' is permitted)"
+  skip "no stale sudoers rule for $API_USER"
 fi
 
 # ---------------------------------------------------------------------------
@@ -259,8 +259,8 @@ if systemctl is-active --quiet "wg-quick@$WG_IF"; then
   if [[ $FORCE_CONF -eq 1 ]]; then
     warn "$CONF was rewritten, but $WG_IF is still running the previous settings."
     warn "Apply them (this drops live tunnels for a moment) with:"
-    warn "    systemctl restart wg-quick@$WG_IF && systemctl restart vpn-api"
-    warn "vpn-api re-applies every active peer from the database when it starts."
+    warn "    systemctl restart wg-quick@$WG_IF"
+    warn "The node agent re-applies every active peer on its next sync."
   fi
 else
   systemctl start "wg-quick@$WG_IF"
@@ -285,9 +285,9 @@ WG_ADDRESS_POOL=$WG_POOL
 WG_SERVER_ADDRESS=$SERVER_IP
 WG_DNS=$WG_DNS
 WG_REGION=de-fra
-WG_SUDO=true
-WG_MOCK=false
 -----------------------------------------------------------------------------
-Run the API as '$API_USER'. It is NOT root and can only invoke: $WG_BIN
+Run the API as '$API_USER'. It needs no privileges at all: not root, no sudo,
+no capabilities. Applying peers to $WG_IF is the node agent's job — install it
+next, or peers will exist in the database and nowhere else.
 -----------------------------------------------------------------------------
 EOF

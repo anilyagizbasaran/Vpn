@@ -49,7 +49,7 @@ const MIGRATIONS: Migration[] = [
 
       -- Partial uniqueness: two *live* peers can never share an address or a
       -- public key, but revoked rows stay for audit and release their IP back
-      -- into the pool. This index is what makes concurrent POST /peers safe --
+      -- into the pool. This index is what makes concurrent POST /devices safe --
       -- the loser of a race gets a constraint error and retries.
       CREATE UNIQUE INDEX peers_active_ip_unique
         ON peers (server_id, allowed_ip) WHERE revoked_at IS NULL;

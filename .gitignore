@@ -16,20 +16,32 @@ vpnd/bin/
 *.test
 
 # Flutter / Dart
-app/.dart_tool/
-app/build/
-app/.flutter-plugins-dependencies
-app/android/.gradle/
-app/android/local.properties
-app/ios/Pods/
-app/ios/.symlinks/
+#
+# Matched at any depth, not under one path: the workspace has a .dart_tool in
+# the root and in every package, and a single test cache .dill runs to 45 MB.
+# Anchoring these to `app/` is how 180 MB of build output reached the history.
+**/.dart_tool/
+**/build/
+**/.flutter-plugins-dependencies
+**/.packages
+**/android/.gradle/
+**/android/local.properties
+**/ios/Pods/
+**/ios/.symlinks/
+**/macos/Pods/
+**/windows/flutter/ephemeral/
+**/linux/flutter/ephemeral/
 *.iml
+
+# The pre-refactor client, removed in favour of apps/client + packages/.
+# `git rm` took the tracked files; what stays on disk is ten generated ones
+# (GeneratedPluginRegistrant, gradlew, Generated.xcconfig) that were never
+# tracked and that the rules above do not cover. Without this line the next
+# `git add -A` puts the dead app straight back.
+/app/
 
 # Editors / OS
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
-
-# Flutter web build output
-apps/dashboard/build/

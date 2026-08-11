@@ -1,0 +1,23 @@
+# Everything here either does not belong in an image or actively breaks it.
+#
+# node_modules is the dangerous one: the host's copy carries a better-sqlite3
+# compiled for this machine's platform, and copying it in would shadow the one
+# the build stage compiles for the image. The failure lands at require() time
+# with an "invalid ELF header", which reads like a corrupt install rather than
+# a stale copy.
+node_modules
+dist
+
+# Local state and secrets. `.env` is mounted at runtime, never baked in — an
+# image layer is readable by anyone who can pull it.
+data
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+
+# Not run inside the image.
+tests
+coverage
+vitest.config.*

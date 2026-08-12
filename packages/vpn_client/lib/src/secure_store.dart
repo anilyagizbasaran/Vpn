@@ -29,6 +29,7 @@ class SecureStore implements SessionStore, DeviceStore {
   static const _peerPublicKey = 'peer.public_key';
   static const _peerKeyCreatedAt = 'peer.key_created_at';
   static const _selectedServer = 'peer.selected_server';
+  static const _serverUrl = 'server.base_url';
 
   // --- SessionStore ---------------------------------------------------------
 
@@ -125,5 +126,18 @@ class SecureStore implements SessionStore, DeviceStore {
     await _storage.delete(key: _peerPrivateKey);
     await _storage.delete(key: _peerPublicKey);
     await _storage.delete(key: _peerKeyCreatedAt);
+  }
+
+  /// The control plane address, when it differs from the one compiled in.
+  /// Not a secret, but it lives here so there is one store to clear and one
+  /// dependency to mock.
+  Future<String?> readServerUrl() => _storage.read(key: _serverUrl);
+
+  Future<void> writeServerUrl(String? url) async {
+    if (url == null) {
+      await _storage.delete(key: _serverUrl);
+      return;
+    }
+    await _storage.write(key: _serverUrl, value: url);
   }
 }

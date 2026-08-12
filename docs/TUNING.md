@@ -1,110 +1,115 @@
-# Kopmalar ve yavaşlık
+# Drops and slowness
 
-Üç ayrı belirti, üç ayrı sebep. Karıştırılırsa yanlış yerde saatler harcanır.
+Three symptoms, three different causes. Confusing them is how hours get spent
+in the wrong place.
 
-| Belirti | Sebep | Nerede çözülür |
+| Symptom | Cause | Fixed in |
 |---|---|---|
-| Bağlanıyor ama bazı siteler açılmıyor / HTTPS takılıyor, ping çalışıyor | **MTU** | İstemci config'i |
-| Bir süre kullanmayınca kopuyor, tekrar açınca düzeliyor | **NAT zaman aşımı** | `PersistentKeepalive` |
-| Hızlı ama kekeliyor, yük altında paket kaybı | **Kernel buffer'ları** | Sunucu sysctl |
+| Connected, but some sites hang and HTTPS stalls while ping works | **MTU** | the client config |
+| Drops after a period of inactivity, recovers when you open the app | **NAT timeout** | `PersistentKeepalive` |
+| Fast but stuttering, packet loss under load | **Kernel buffers** | server sysctl |
 
-## 1. MTU — "ping çalışıyor, HTTPS takılıyor"
+## 1. MTU — "ping works, HTTPS hangs"
 
-En sık ve en yanıltıcı olan. Küçük paketler geçiyor, büyük paketler geçmiyor.
-Yol üzerindeki bir router "fragmentation needed" ICMP'si göndermeli ama
-internetin büyük kısmında ICMP filtreleniyor, dolayısıyla o mesaj hiç
-ulaşmıyor. Tünel ayakta görünüyor ve iş görmüyor.
+The most common and the most misleading. Small packets get through, large ones
+do not. A router on the path is supposed to send a "fragmentation needed" ICMP,
+but much of the internet filters ICMP, so that message never arrives. The
+tunnel looks up and does not work.
 
-**Varsayılanımız 1420** (`WG_CLIENT_MTU`) ve 1500'lük normal bir yol için
-doğru. Ama yol 1500 değilse düşürmek gerekir:
+**The default is 1420** (`WG_CLIENT_MTU`), which is right for an ordinary
+1500-byte path. When the path is not 1500, it has to come down:
 
-| Erişim tipi | Yol MTU | Önerilen |
+| Access type | Path MTU | Use |
 |---|---|---|
-| Normal ethernet/fiber | 1500 | 1420 |
-| PPPoE (çoğu DSL) | 1492 | 1412 |
-| Bazı mobil şebekeler / CGNAT | 1400–1450 | 1380 |
-| Üstüne başka tünel varsa | değişken | 1280 (IPv6 tabanı, her yerde geçer) |
+| Ordinary ethernet or fibre | 1500 | 1420 |
+| PPPoE (most DSL) | 1492 | 1412 |
+| Some mobile networks, CGNAT | 1400–1450 | 1380 |
+| Another tunnel on top | varies | 1280 (the IPv6 floor; works everywhere) |
 
-Doğru değeri tahmin etme, **ölç**. İstemcide bağlıyken:
+Do not guess the number — **measure it**. On the client, while connected:
 
 ```bash
 ./server/scripts/verify-tunnel.sh --expect-ip <VPS-IP>
 ```
 
-Betik parçalanmaya izin vermeden büyük paket gönderiyor. Elle bakmak istersen:
+The script sends a large packet with fragmentation forbidden. By hand:
 
 ```bash
-# Geçen en büyük payload'ı bul; MTU = bulunan + 28
+# Find the largest payload that gets through; MTU = that + 28
 ping -M do -s 1372 -c 2 1.1.1.1   # 1372 + 28 = 1400
 ```
 
-`WG_CLIENT_MTU`'yu değiştirip control plane'i yeniden başlatmak yeterli —
-istemciler bir sonraki config çekişinde alır.
+Changing `WG_CLIENT_MTU` and restarting the control plane is enough — clients
+pick it up the next time they fetch a config.
 
-> Bunu tek bir kullanıcı için değil, kullanıcı tabanının en kötü yolu için
-> ayarla. 1380 herkeste çalışır ve iyi yollarda kaybı yüzde birin altındadır;
-> 1420 kötü yollarda tamamen bozulur. Şüphedeysen düşür.
+> Tune this for the worst path in your user base, not for one person. 1380
+> works for everyone and costs under a percent on a good path; 1420 breaks
+> completely on a bad one. When in doubt, go lower.
 
-## 2. Kopmalar — NAT zaman aşımı
+## 2. Drops — NAT timeout
 
-İstemci NAT arkasındayken (ev routerı, mobil) ve trafik yokken router UDP
-eşleşmesini düşürüyor; sunucu artık istemciye ulaşamıyor. Kullanıcı bunu
-"uygulamayı açınca düzeliyor" diye tarif eder.
+When the client is behind NAT — a home router, a mobile network — and no
+traffic flows, the router drops the UDP mapping and the server can no longer
+reach the client. Users describe this as "it fixes itself when I open the app".
 
-**`PersistentKeepalive = 25`** bunu çözüyor ve bizde varsayılan.
-25 saniye keyfi değil: sahadaki en agresif UDP NAT zaman aşımları 30 saniye
-civarında kümeleniyor, 25 onun altında kalan en büyük yuvarlak değer.
+**`PersistentKeepalive = 25`** solves it, and is the default here. The 25 is
+not arbitrary: the most aggressive UDP NAT timeouts in the field cluster around
+30 seconds, and 25 is the largest round number below that.
 
-Hâlâ kopuyorsa NAT alışılmadık derecede agresif demektir — `WG_PERSISTENT_KEEPALIVE=15`
-dene. Daha aşağı inmenin anlamı yok, sadece pil ve veri harcar.
+If it still drops, the NAT is unusually aggressive — try
+`WG_PERSISTENT_KEEPALIVE=15`. Going lower buys nothing and spends battery and
+data.
 
-Keepalive **istemci tarafında** olmalı, sunucuda değil: NAT arkasında olan
-taraf o. Bizim ürettiğimiz `.conf` zaten istemci config'i, doğru yerde.
+The keepalive belongs on the **client**, not the server: the client is the side
+behind NAT. The `.conf` this project generates is a client config, so it is
+already in the right place.
 
-**WireGuard roaming'i kendi hallediyor:** istemci wifi'dan mobile geçtiğinde
-sunucu, doğrulanmış ilk paketten endpoint'i güncelliyor. Bunun için ayar yok
-ve gerekmiyor.
+**WireGuard handles roaming by itself:** when a client moves from wifi to
+mobile, the server updates the endpoint from the first authenticated packet.
+There is no setting for this and none is needed.
 
-## 3. Yük altında paket kaybı — kernel buffer'ları
+## 3. Packet loss under load — kernel buffers
 
-Varsayılan `rmem_max` çoğu dağıtımda ~212 KB. Bu, WireGuard şifre çözerken
-gelen paket patlamasını tutmaya yetmiyor: kernel paketleri **WireGuard onları
-görmeden** düşürüyor. Kullanıcıda "hızlı ama kekeliyor" olarak görünür.
+The default `rmem_max` is around 212 KB on most distributions. That is not
+enough to hold the burst of packets arriving while WireGuard decrypts: the
+kernel drops them **before WireGuard sees them**. To the user this is "fast but
+stuttering".
 
-`setup-wg.sh` artık bunları yazıyor (`/etc/sysctl.d/99-wireguard.conf`):
+`setup-wg.sh` writes these to `/etc/sysctl.d/99-wireguard.conf`:
 
 ```
 net.core.rmem_max = 16777216        # 212 KB -> 16 MB
 net.core.wmem_max = 16777216
-net.core.netdev_max_backlog = 5000  # NIC ile kernel arasındaki kuyruk
-net.core.netdev_budget = 600        # tek NAPI turunda işlenecek paket
+net.core.netdev_max_backlog = 5000  # queue between the NIC and the kernel
+net.core.netdev_budget = 600        # packets processed in one NAPI poll
 net.netfilter.nf_conntrack_max = 262144
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 ```
 
-**conntrack özellikle önemli:** NAT kuralı yüzünden tünellenen her akış bir
-conntrack yuvası tutuyor. Varsayılan tablo sessizce doluyor ve dolduğunda yeni
-bağlantılar rastgele başarısız oluyor — kullanıcı bunu "bazen açılmıyor" diye
-tarif eder, ki teşhis etmesi en zor belirti.
+**conntrack matters most.** Because of the NAT rule, every tunnelled flow holds
+a conntrack slot. The default table fills silently, and once it is full new
+connections fail at random — which users report as "sometimes it just doesn't
+load", the hardest symptom of all to diagnose.
 
-Doluluğu izle:
+Watch how full it is:
 
 ```bash
 sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max
 ```
 
-**BBR**, VPN'in ürettiği uzun ve kayıplı yollarda cubic'ten belirgin şekilde
-iyi. Kernel'de `tcp_bbr` yoksa script uyarı verip devam ediyor.
+**BBR** is clearly better than cubic on the long, lossy paths a VPN produces.
+If the kernel has no `tcp_bbr`, the script warns and carries on.
 
-## Neyi ölçmeli
+## What to measure
 
 ```bash
-sudo ./server/scripts/verify-deploy.sh      # sysctl, NAT, forwarding
-./server/scripts/verify-tunnel.sh --expect-ip <VPS-IP>   # MTU, sızıntı, handshake
-sudo wg show wg0 transfer                   # iki yönde de bayt akıyor mu
-sudo wg show wg0 latest-handshakes          # 180sn'den eskiyse sorun var
+sudo ./server/scripts/verify-deploy.sh                     # sysctl, NAT, forwarding
+./server/scripts/verify-tunnel.sh --expect-ip <VPS-IP>     # MTU, leaks, handshake
+sudo wg show wg0 transfer                                  # bytes moving both ways
+sudo wg show wg0 latest-handshakes                         # older than 180s is trouble
 ```
 
-Trafik akarken WireGuard yaklaşık iki dakikada bir yeniden el sıkışıyor. Son
-el sıkışma 3 dakikadan eskiyse ya tünel boşta ya da peer'a ulaşılamıyor.
+While traffic flows, WireGuard rehandshakes roughly every two minutes. A last
+handshake older than three minutes means the tunnel is idle or the peer is
+unreachable.

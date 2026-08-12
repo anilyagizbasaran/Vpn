@@ -40,6 +40,13 @@ vpnd/bin/
 # `git add -A` puts the dead app straight back.
 /app/
 
+# MSBuild bridges for a locally broken toolchain. Machine-specific by
+# definition — one exists here because this machine's ATL headers and MSVC
+# compiler ended up in different toolset directories — and committing one
+# would impose a local repair on everyone who clones.
+apps/*/Directory.Build.props
+apps/*/Directory.Build.targets
+
 # Editors / OS
 .idea/
 .vscode/

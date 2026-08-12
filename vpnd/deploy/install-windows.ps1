@@ -45,10 +45,32 @@ from https://www.wireguard.com/install/ before connecting.
 '@
 }
 
-Write-Host '==> Installing the binary'
+# Stopped before the binary is replaced, not after. Windows locks the image of
+# a running executable, so copying over it fails, which is what made re-running
+# this script to upgrade the daemon die on its third line before anything said
+# why.
+$running = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($running -and $running.Status -ne 'Stopped') {
+    Write-Host '==> Stopping the running service so its binary can be replaced'
+    Stop-Service $ServiceName -Force
+    $running.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+}
+
+Write-Host '==> Installing the binaries'
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $target = Join-Path $InstallDir 'vpnd.exe'
 Copy-Item $BinaryPath $target -Force
+
+# vpnctl travels with the daemon, because the line this script prints at the
+# end tells you to run it. Taken from beside the binary given, which is where
+# both a go build and the release archive put it.
+$vpnctlSource = Join-Path (Split-Path $BinaryPath) 'vpnctl.exe'
+if (Test-Path $vpnctlSource) {
+    Copy-Item $vpnctlSource (Join-Path $InstallDir 'vpnctl.exe') -Force
+    Write-Host '    vpnd.exe, vpnctl.exe'
+} else {
+    Write-Host '    vpnd.exe only; vpnctl.exe was not next to it'
+}
 
 Write-Host '==> Preparing the data directory'
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -86,12 +108,20 @@ if ($existing) {
     Start-Sleep -Seconds 2
 }
 
-& sc.exe create $ServiceName `
-    binPath= "`"$target`" --interface vpn0" `
-    start= auto `
-    DisplayName= 'VPN Client Tunnel Service' | Out-Null
-& sc.exe description $ServiceName `
-    'Creates and removes the WireGuard tunnel for the VPN client. The app talks to this service so it does not have to run as Administrator.' | Out-Null
+# The path contains a space ("Program Files"), so it needs inner quotes or the
+# service manager reads everything after the first space as arguments.
+$binPath = '"{0}" --interface vpn0' -f $target
+
+# New-Service rather than `sc.exe create`. sc.exe wants `binPath= <value>` as
+# two tokens, and PowerShell's native-argument quoting mangles that into
+# something it rejects with 1639 and a page of usage text. New-Service takes
+# the same information as parameters and throws on failure instead of
+# reporting through an exit code nobody checked.
+New-Service -Name $ServiceName `
+    -BinaryPathName $binPath `
+    -DisplayName 'VPN Client Tunnel Service' `
+    -StartupType Automatic `
+    -Description 'Creates and removes the WireGuard tunnel for the VPN client. The app talks to this service so it does not have to run as Administrator.' | Out-Null
 
 # Restart on failure rather than leaving the user with a dead service and no
 # explanation: 5s, 10s, then every 60s.

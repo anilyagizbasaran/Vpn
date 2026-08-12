@@ -14,7 +14,7 @@ import 'unsupported_tunnel.dart';
 /// Composition root. Everything below is wired here and nowhere else, which is
 /// what lets the desktop build swap one line — the [Tunnel] — without any
 /// other layer knowing.
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final store = SecureStore();
@@ -23,6 +23,16 @@ void main() {
     baseUrl: AppConfig.apiBaseUrl,
     timeout: AppConfig.requestTimeout,
   );
+
+  // Loaded before anything issues a request, so the first call already goes to
+  // the right place. A self-hosted server can move, and the alternative to this
+  // is reinstalling every client when it does.
+  final serverAddress = VpnServerAddress(
+    store: store,
+    api: api,
+    buildDefault: AppConfig.apiBaseUrl,
+  );
+  await serverAddress.load();
 
   // The one line that differs between platforms. Everything above the tunnel
   // contract — controllers, storage, rotation policy, UI — is identical.
@@ -64,6 +74,7 @@ void main() {
       providers: [
         ChangeNotifierProvider.value(value: auth),
         ChangeNotifierProvider.value(value: vpn),
+        ChangeNotifierProvider.value(value: serverAddress),
         Provider.value(
           value: SystemSettings(isSupported: AppConfig.hasSystemVpnSettings),
         ),

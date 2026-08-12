@@ -191,6 +191,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             : 'Create a new account',
                       ),
                     ),
+
+                    const Divider(height: 32),
+                    const _ServerAddressRow(),
                   ],
                 ),
               ),
@@ -199,5 +202,117 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     );
+  }
+}
+
+/// Shows which server the app talks to, and lets it be changed.
+///
+/// It lives on the sign-in screen because that is the only place it is safe:
+/// tokens and the registered device belong to one control plane, so changing
+/// the address while signed in would produce failures that each look like
+/// something else. Signed out there is nothing to invalidate.
+class _ServerAddressRow extends StatelessWidget {
+  const _ServerAddressRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final address = context.watch<VpnServerAddress>();
+
+    return Row(
+      children: [
+        Icon(
+          Icons.dns_outlined,
+          size: 16,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Server',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              Text(
+                address.current,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        TextButton(
+          onPressed: () => _edit(context, address),
+          child: const Text('Change'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _edit(BuildContext context, VpnServerAddress address) async {
+    final controller = TextEditingController(text: address.current);
+    final entered = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Server address'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              decoration: const InputDecoration(
+                hintText: 'https://vpn.example.com',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (value) => Navigator.pop(dialogContext, value),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'This device will be registered again on the new server, so you '
+              'will need to sign in and connect once more.',
+              style: Theme.of(dialogContext).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          if (address.isOverridden)
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, address.buildDefault),
+              child: const Text('Reset'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+    if (entered == null || !context.mounted) return;
+
+    try {
+      await address.change(entered);
+    } on ServerAddressError catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    }
   }
 }

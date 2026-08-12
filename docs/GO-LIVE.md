@@ -1,103 +1,111 @@
-# Canlıya alma sırası
+# Going live, in order
 
-Her adımın sonunda bir doğrulama var. Bir adım kırmızıysa sonrakine geçme —
-sonraki adımın hatası hep aynı belirsiz mesajla görünür ("connecting…"), ve
-gerçek sebebi geriye doğru bulmak saatler alır.
+Every step ends with a check. When one is red, do not move on — every later
+failure surfaces as the same vague symptom ("connecting…"), and tracing it
+backwards costs hours.
 
-## 0. Öncesi
+> **The short way.** On a fresh Ubuntu or Debian VPS,
+> `curl -fsSL https://raw.githubusercontent.com/anilyagizbasaran/Vpn/main/install.sh | sudo bash`
+> does all of steps 1 to 3 and prints the address to paste into the app. What
+> follows is the same thing by hand, which is what to read when the installer
+> stops somewhere.
+
+## 0. Before you start
 
 ```bash
-# Yerelde, deploy öncesi son kontrol
+# Locally, the last check before deploying
 cd server && npm test && npm run typecheck
 cd vpnd   && go test ./... && go vet ./...
 dart pub get && dart analyze packages apps
 ```
 
-## 1. WireGuard sunucusu
+## 1. The WireGuard server
 
 ```bash
-# VPS'te (Ubuntu/Debian, root)
-sed -i 's/\r$//' scripts/*.sh          # Windows'tan kopyaladıysan
+# On the VPS (Ubuntu/Debian, as root)
+sed -i 's/\r$//' scripts/*.sh          # if you copied these from Windows
 chmod +x scripts/*.sh
-./scripts/setup-wg.sh --endpoint vpn.senin-domain.com --port 51820
+./scripts/setup-wg.sh --endpoint vpn.example.com --port 51820
 ```
 
-**Doğrula:**
+**Check:**
 
 ```bash
 sudo ./scripts/verify-deploy.sh
 ```
 
-Bu aşamada control plane henüz yok, yani "vpn-api is not running" bekleniyor.
-Kırmızı olmaması gerekenler: interface, forwarding, MASQUERADE, port.
+The control plane does not exist yet, so "vpn-api is not running" is expected.
+What must not be red: the interface, forwarding, MASQUERADE, the port.
 
-## 2. Control plane
+## 2. The control plane
 
-İki yol var, ikisi de aynı sonucu veriyor. `.env` her ikisinde de aynı dosya:
-`setup-wg.sh`'in bastığı `WG_*` değerleri + `npm run keygen` çıktısı, artı
+Two ways, same result. `.env` is the same file either way: the `WG_*` values
+`setup-wg.sh` printed, plus the output of `npm run keygen`, plus
 `NODE_ENV=production`, `TRUST_PROXY=1`, `WG_SKIP_BOOTSTRAP_NODE=true`.
 
-**a) systemd ile**
+**a) systemd**
 
 ```bash
 sudo systemctl enable --now vpn-api
 sudo systemctl reload caddy
 ```
 
-**b) Docker ile** — Caddy'yi de birlikte getirir
+**b) Docker** — brings Caddy with it
 
 ```bash
-# server/deploy/Caddyfile.docker içindeki api.example.com'u kendi domain'inle
-# değiştir; Caddy açılışta Let's Encrypt'e o isim için sertifika soruyor.
-docker compose up -d
-docker compose ps        # api "healthy" olmalı
+SITE_ADDRESS=vpn.example.com docker compose up -d
+docker compose ps        # api should be "healthy"
 ```
 
-Control plane'in artık hiçbir ayrıcalığa ihtiyacı olmaması bunu mümkün kılan
-şey: container `cap_drop: ALL`, `read_only` ve `no-new-privileges` ile
-çalışıyor, yazdığı tek yer veritabanı volume'ü.
+`SITE_ADDRESS` is the only thing that differs between a laptop and production:
+set it and Caddy fetches a Let's Encrypt certificate on boot; leave it and it
+serves plain HTTP on :80 without touching ACME.
 
-WireGuard container'da **değil**. `wg0` host'un kernel arayüzü; `setup-wg.sh`
-onu ayağa kaldırıyor ve `docker compose down` dahil her şeye rağmen ayakta
-kalıyor. Peer'lar container yeniden kurulunca kaybolmuyor.
+What makes this possible is that the control plane needs no privileges at all:
+the container runs with `cap_drop: ALL`, `read_only` and `no-new-privileges`,
+and the database volume is the only thing it writes.
 
-**Doğrula:**
+WireGuard is **not** containerised. `wg0` is a host kernel interface brought up
+by `setup-wg.sh`, and it survives everything including `docker compose down`.
+Peers are not lost when the containers are rebuilt.
+
+**Check:**
 
 ```bash
-sudo ./scripts/verify-deploy.sh   # ajan henüz yok, node uyarısı normal
+sudo ./scripts/verify-deploy.sh   # no agent yet, so the node warning is normal
 ```
 
-Kabul testi ajandan sonra çalıştırılır — bir sonraki adımın sonunda.
+The acceptance run comes after the agent — at the end of the next step.
 
-## 3. Node ajanı
+## 3. The node agent
 
-> **Tek sunucuda da gerekiyor.** Control plane artık WireGuard'a hiç dokunmuyor
-> — ayrıcalıksız çalışabilmesinin sebebi bu. Ajan olmadan peer'lar veritabanında
-> var, interface'te yok.
+> **Required even on a single server.** The control plane no longer touches
+> WireGuard — that is exactly what lets it run unprivileged. Without an agent,
+> peers exist in the database and nowhere else.
 
-Control plane ayakta olduğuna göre node'u tanımla, sonra ajanı bağla:
+With the control plane up, define the node and then connect the agent:
 
 ```bash
 cd /opt/vpn-control-plane
 npm run node:add -- --region de-fra --display "Frankfurt" \
-  --endpoint vpn.senin-domain.com:51820 \
+  --endpoint vpn.example.com:51820 \
   --public-key "$(sudo cat /etc/wireguard/server_public.key)" \
   --pool 10.8.0.0/24 --default
 
-# Docker kullanıyorsan aynı komut:
+# The same command under Docker:
 docker compose exec api node scripts/add-node.mjs --region de-fra \
-  --display "Frankfurt" --endpoint vpn.senin-domain.com:51820 \
+  --display "Frankfurt" --endpoint vpn.example.com:51820 \
   --public-key "$(sudo cat /etc/wireguard/server_public.key)" \
   --pool 10.8.0.0/24 --default
 ```
 
-Token bir kez basılıyor. Node'da:
+The token is printed once. On the node:
 
 ```bash
 sudo install -m 755 vpn-node-agent /usr/local/bin/
 sudo tee /etc/vpn-node-agent.env >/dev/null <<'EOF'
-VPN_CONTROL_PLANE=https://api.senin-domain.com
-VPN_NODE_TOKEN=<node:add ciktisindaki token>
+VPN_CONTROL_PLANE=https://vpn.example.com
+VPN_NODE_TOKEN=<the token node:add printed>
 VPN_INTERFACE=wg0
 EOF
 sudo chmod 600 /etc/vpn-node-agent.env
@@ -105,121 +113,140 @@ sudo cp deploy/vpn-node-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now vpn-node-agent
 ```
 
-Docker ile de çalıştırılabilir ama **systemd tercih edilmeli.** Ajan `wg0`'ı
-görmek için host ağını, değiştirmek için `CAP_NET_ADMIN`'i istiyor; ikisi
-birlikte container'a systemd unit'iyle aynı erişimi veriyor, unit'in
-sandbox'ı (`ProtectSystem`, `ProtectKernelTunables`, `RestrictNamespaces`)
-olmadan. Yine de gerekiyorsa:
+Docker works too, but **systemd is preferred.** The agent needs host networking
+to see `wg0` and `CAP_NET_ADMIN` to change it; together those give the
+container the same reach the systemd unit has, without that unit's sandboxing
+(`ProtectSystem`, `ProtectKernelTunables`, `RestrictNamespaces`). If you want
+it anyway:
 
 ```bash
-cp vpnd/.env.example vpnd/.env    # token'ı yapıştır
+cp vpnd/.env.example vpnd/.env    # paste the token
 docker compose --profile agent up -d agent
 ```
 
-**Doğrula:**
+**Check:**
 
 ```bash
-sudo journalctl -u vpn-node-agent -n 20    # "peers reconciled" gormeli
-curl -s https://api.senin-domain.com/ready | jq '.nodes'
+sudo journalctl -u vpn-node-agent -n 20    # expect "peers reconciled"
+curl -s https://vpn.example.com/ready | jq '.nodes'
 ```
 
-`online: false` ise ajan API'ye ulaşamıyor. `agentProvisioned: false` ise token
-hiç üretilmemiş.
+`online: false` means the agent cannot reach the API. `agentProvisioned: false`
+means no token was ever minted.
 
-Zincirin tamamı ayakta, şimdi uçtan uca:
+The whole chain is up, so now run it end to end:
 
-`ash
-node scripts/acceptance.mjs https://api.senin-domain.com --check-wg
-`
+```bash
+node scripts/acceptance.mjs https://vpn.example.com --check-wg
+```
 
-`--check-wg` sunucunun *kendisinde* çalıştırıldığında cihaz oluşturup
-anahtarın `wg show`'da **belirmesini bekliyor** — API, veritabanı, ajan ve
-`wg` zincirinin tamamını sınıyor. Mock ile test edilemeyen tek şey bu.
-Rotasyonun tersini de doğruluyor: eski anahtarın interface'ten **çıktığını**.
+Run on the server *itself*, `--check-wg` creates a device and **waits for the
+key to appear in `wg show`** — exercising the API, the database, the agent and
+`wg`. It is the one thing no mock can test. It also checks the inverse of
+rotation: that the old key **leaves** the interface.
 
-Betik kendi hesaplarını açıp siliyor, production'da güvenli. Rate limiter'ı da
-denemek istersen `--rate-limits` ekle — **çalıştırdığın IP'yi 15 dakika
-kilitler**.
+The script creates and deletes its own accounts, so it is safe against
+production. Add `--rate-limits` to exercise the limiter too — it **locks the IP
+you run it from out for 15 minutes**.
 
-## 4. Mobil istemci
+## 4. The mobile client
 
 ```bash
 cd apps/client
-flutter run --release --dart-define=API_BASE_URL=https://api.senin-domain.com
+flutter run --release --dart-define=API_BASE_URL=https://vpn.example.com
 ```
 
-**Doğrula:** telefonda bağlan, sonra VPS'te:
+**Check:** connect on the phone, then on the VPS:
 
 ```bash
-sudo wg show wg0 latest-handshakes    # sıfırdan farklı bir zaman damgası
-sudo wg show wg0 transfer             # iki yönde de bayt
+sudo wg show wg0 latest-handshakes    # a timestamp other than zero
+sudo wg show wg0 transfer             # bytes in both directions
 ```
 
-Telefonda `whatismyip` → VPS'in IP'si görünmeli.
+On the phone, `whatismyip` should show the VPS's address.
 
-Linux/macOS istemcide daha ayrıntılısı için:
+For something more thorough on a Linux or macOS client:
 
 ```bash
 ./server/scripts/verify-tunnel.sh --expect-ip <VPS-IP>
 ```
 
-Bu, el yordamıyla fark edilmesi zor üç şeyi kontrol eder: **IPv6 sızıntısı**
-(IPv4-only tünelde klasik), DNS'in nereye gittiği, ve MTU (ping çalışırken
-HTTPS'in takılması).
+That checks three things which are hard to notice by hand: **IPv6 leaks** (the
+classic on an IPv4-only tunnel), where DNS actually goes, and MTU (ping working
+while HTTPS hangs).
 
-## 5. Masaüstü istemci
+## 5. The desktop client
 
 ```bash
 # Linux
 sudo install -m 755 vpnd /usr/local/bin/vpnd
-sudo groupadd -f vpn && sudo usermod -aG vpn "$USER"   # sonra oturumu kapat/aç
+sudo groupadd -f vpn && sudo usermod -aG vpn "$USER"   # then log out and back in
 sudo cp deploy/vpnd.service /etc/systemd/system/
 sudo systemctl enable --now vpnd
 
-# Windows (yönetici PowerShell)
+# Windows (administrator PowerShell)
 .\deploy\install-windows.ps1 -BinaryPath .\bin\vpnd.exe
 ```
 
-**Doğrula:**
+> The same binary is both a service and a console program;
+> `svc.IsWindowsService()` tells them apart. Started as a service it reports
+> running to the SCM, and on a stop request it brings the tunnel down before
+> exiting.
+>
+> To run it without installing a service while developing:
+>
+> ```powershell
+> Start-Process .\bin\vpnd.exe -Verb RunAs
+> ```
+
+**Check:**
 
 ```bash
 ./scripts/verify-daemon.sh                 # Linux/macOS
 .\scripts\verify-daemon.ps1                # Windows
 ```
 
-Bu betik en önemli iki şeyi ayrıca dener: soketin **TCP'de dinlemediğini**, ve
-`PostUp` içeren bir config'in **reddedildiğini**. İkincisi gerçekten dosya
-yazmayı dener — çalışsaydı root/SYSTEM olarak kod çalıştırılmış olurdu.
+That script tries the two things that matter most: that the socket is **not
+listening on TCP**, and that a config containing `PostUp` is **refused**. The
+second genuinely attempts to write a file — if it worked, that would be code
+execution as root or SYSTEM.
 
-## 6. Tarayıcı eklentisi
+## 6. The browser extension
 
-[extension/README.md](../extension/README.md) — eklenti ID'sini alıp native
-host manifest'ine yazmak ve Chrome'u yeniden başlatmak gerekiyor.
+[extension/README.md](../extension/README.md) — you need the extension's ID for
+the native host manifest, and Chrome has to be restarted afterwards.
 
-**Doğrula:** rozet `ON` göstermeli, popup'tan Disconnect çalışmalı.
+**Check:** the badge shows `ON` and Disconnect works from the popup.
 
-## 7. Web dashboard ve indirme sayfası
+## 7. The dashboard and download page
+
+Under Docker both are already inside the `caddy` image, served at `/` and
+`/dashboard/`. By hand:
 
 ```bash
-cd apps/dashboard && flutter build web --release
-# build/web'i Caddy'nin servis ettiği dizine kopyala
+cd apps/dashboard && flutter build web --release --base-href /dashboard/
+# copy build/web to wherever Caddy serves from
 ```
 
-Dashboard `API_BASE_URL` boş bırakılırsa same-origin çalışır — Caddy hem
-sayfayı servis edip hem `/auth` ve `/devices`'ı proxy'liyorsa hiçbir ayar
-gerekmez ve CORS'a hiç girilmez.
+`--base-href` matters: Flutter writes `<base href="/">` otherwise, and a build
+served under `/dashboard/` then fetches its bootstrap from the wrong path and
+renders a blank page with nothing to explain it.
+
+Leaving `API_BASE_URL` empty makes the dashboard same-origin — when Caddy
+serves the page and proxies `/auth` and `/devices`, nothing needs configuring
+and CORS never comes up.
 
 ---
 
-## Bir şey ters giderse
+## When something goes wrong
 
-| Belirti | Bakılacak yer |
+| Symptom | Where to look |
 |---|---|
-| "connecting" sonsuza kadar | `sudo wg show wg0 latest-handshakes` — sıfırsa anahtar sunucuda yok |
-| Handshake var, internet yok | `verify-deploy.sh` → forwarding ve MASQUERADE |
-| Ping çalışıyor, HTTPS takılıyor | MTU. `WG_CLIENT_MTU=1380` dene |
-| IP değişmedi | `verify-tunnel.sh` → AllowedIPs muhtemelen `0.0.0.0/0` değil |
-| Masaüstünde "service is not running" | `verify-daemon.sh` — servis mi, soket izni mi, protokol mü |
-| Herkes aynı anda 429 alıyor | `TRUST_PROXY` proxy sayısıyla eşleşmiyor |
-| Cihaz eklendi ama tünel kurulmuyor | Ajan çalışmıyor: `journalctl -u vpn-node-agent` |
-| `/ready` 503 | Hiçbir ajan sync etmemiş |
+| "connecting" forever | `sudo wg show wg0 latest-handshakes` — zero means the key is not on the server |
+| Handshake, but no internet | `verify-deploy.sh` → forwarding and MASQUERADE |
+| Ping works, HTTPS hangs | MTU. Try `WG_CLIENT_MTU=1380` |
+| The IP did not change | `verify-tunnel.sh` → AllowedIPs is probably not `0.0.0.0/0` |
+| "service is not running" on desktop | `verify-daemon.sh` — the service, the socket permissions, or the protocol |
+| Everyone gets 429 at once | `TRUST_PROXY` does not match the number of proxies |
+| Device added but no tunnel | The agent is not running: `journalctl -u vpn-node-agent` |
+| `/ready` returns 503 | No agent has synced |

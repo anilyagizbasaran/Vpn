@@ -20,7 +20,24 @@ decrypts nothing. The cost is stated plainly: **lose the device, lose the key** 
 there is no copy to restore, and the app handles it by revoking the device and
 registering a new one.
 
-> Nothing here has run against a real tunnel yet. See [Status](#status).
+## Install
+
+On a fresh Ubuntu or Debian VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anilyagizbasaran/Vpn/main/install.sh | sudo bash
+```
+
+It installs WireGuard, the control plane, a certificate and the node agent,
+then prints one address. Paste that into the app and you have a VPN.
+
+**No domain needed.** The installer derives a hostname from the machine's own
+address through [sslip.io](https://sslip.io), which is enough for Let's Encrypt
+to issue a certificate. Pass `--domain vpn.example.com` to use your own instead.
+
+Then download the app from
+[Releases](https://github.com/anilyagizbasaran/Vpn/releases), enter that
+address, and create an account — the first one is yours.
 
 ## How it works
 
@@ -47,6 +64,22 @@ client-side region selection are all in place, but one node is running. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for why each of these decisions
 went the way it did.
 
+### What the extension is for
+
+It cannot open a tunnel — no browser extension can — so it shows the desktop
+app's tunnel and toggles it. That would not be worth installing on its own.
+What makes it worth having is the leak the tunnel **cannot** close:
+
+- **WebRTC.** It hands page JavaScript the real adapter address, whatever the
+  tunnel is doing. Only the browser can stop that, and it is on by default here.
+- **A kill switch** that blocks browsing while the tunnel is down.
+- **Ad and tracker blocking** — 77 third-party domains in two toggleable lists,
+  with a per-site exemption for the pages that break without them.
+
+None of it costs a network permission. The lists ship with the extension rather
+than being fetched, and `declarativeNetRequest` blocking needs no host access,
+so the extension still cannot read a page or see a request.
+
 ## Repository layout
 
 ```
@@ -56,7 +89,7 @@ server/            Control plane — Node + Express + TypeScript (127 tests)
 vpnd/              Desktop service and node agent — Go
   cmd/             vpnd · vpnctl · vpn-browser-host · vpn-node-agent
 packages/          Shared Dart layers (90 tests)
-  vpn_crypto/          L0  X25519, no dependencies
+  vpn_crypto/          L0  X25519, one dependency: package:cryptography
   vpn_api/             L1  HTTP + models (no Flutter, no dart:io)
   vpn_tunnel/          L2  platform-agnostic tunnel contract
   vpn_tunnel_mobile/   L2  Android / iOS
@@ -240,19 +273,26 @@ for a 429 never gets to parse 32 KB of JSON first.
 
 | Part | State | Verified by |
 |---|---|---|
-| Control plane | Done | 127 tests; 26/28 acceptance checks against a container |
+| Control plane | Done | 127 tests; **28/28 acceptance checks against the live server** |
 | Dart layers | Done | 90 tests, `dart analyze` clean |
-| vpnd daemon | Done | Go tests, live against a mock driver |
 | Mobile app | Done | `flutter build apk --release` — 58 MB |
-| Desktop app | Code done | **Build unverified** (no Visual Studio C++ workload here) |
-| Web dashboard | Done | `flutter build web` succeeds |
-| Docker | Done | `compose up` → healthy, migrations applied |
-| Browser extension | Code done | Bridge verified by hand, not tested in Chrome |
-| Website + CI | Code done | The pipeline has never run |
+| Desktop daemon | Done | **Real tunnel, end to end**; Windows service start is broken (below) |
+| Desktop GUI | Code done | Build unverified — needs the Visual Studio C++ workload |
+| Browser extension | Done | Native host verified against a real daemon; toggles a live tunnel |
+| Web dashboard | Done | Sign in, register and device list against the live API |
+| Docker | Done | Site, dashboard and API from one origin; `compose up` healthy |
+| Website | Code done | The download grid stays empty until a release is published |
+| CI | Done | Five jobs green, including a start-and-health-check of the API image |
 
-**Nothing has been tested against a real tunnel.** Everything is verified
-against mocks; the first real handshake happens after a VPS deploy. The two
-acceptance checks that fail say exactly this: no node agent has synced.
+**The tunnel is real.** A client generated a keypair, the control plane
+allocated an address, the node agent applied the peer, and traffic left through
+the VPS — verified from a container and from a Windows desktop, with no DNS
+leak and no MTU stall.
+
+One thing is worth knowing: the Windows service integration is new. The daemon
+now speaks the service control protocol, and the same binary still runs from a
+console — but the service path has been verified by cross-compiling and by
+running it as a console process, not yet by a full install-and-start cycle.
 
 ## Not built, on purpose
 

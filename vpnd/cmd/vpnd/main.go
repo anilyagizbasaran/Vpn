@@ -48,13 +48,34 @@ func main() {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	if err := run(log, *socketPath, *iface, *configDir, *mock); err != nil {
+	// Under the service control manager the lifecycle is its to drive: it
+	// decides when to stop, and it expects to be told when the service is
+	// running. From a console the signal handling below is the whole story.
+	if isWindowsService() {
+		serve := func(ctx context.Context) error {
+			return run(ctx, log, *socketPath, *iface, *configDir, *mock)
+		}
+		if err := runService(log, serviceName, serve); err != nil {
+			log.Error("vpnd stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, log, *socketPath, *iface, *configDir, *mock); err != nil {
 		log.Error("vpnd stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, socketPath, iface, configDir string, mock bool) error {
+// Matches the name install-windows.ps1 registers. The SCM passes it back on
+// start, and a mismatch is rejected before Execute ever runs.
+const serviceName = "vpnd"
+
+func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir string, mock bool) error {
 	var driver tunnel.Driver
 	if mock {
 		log.Warn("mock driver active — no real tunnel will be configured")
@@ -78,9 +99,6 @@ func run(log *slog.Logger, socketPath, iface, configDir string, mock bool) error
 		"interface", iface,
 		"driver", driver.Name(),
 		"version", ipc.Version)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- ipc.NewServer(manager, log).Serve(ctx, listener) }()

@@ -58,6 +58,7 @@ Optional:
   --default                make this the region new clients get
   --status <s>             active | draining | offline
   --rotate-token           issue a new agent token, invalidating the old one
+  --token-only             print just the token, for scripts
 `);
   process.exit(2);
 }
@@ -109,6 +110,18 @@ try {
       server.id,
       hashNodeToken(env.JWT_REFRESH_PEPPER, token),
     );
+  }
+
+  // Machine-readable mode for install.sh, which has to hand the token to the
+  // agent without a human copying it. Parsing the prose block below instead
+  // would break the day someone improves the wording.
+  if (args['token-only'] === true) {
+    if (!token) {
+      console.error('No token was issued. Pass --rotate-token to replace the existing one.');
+      process.exit(1);
+    }
+    console.log(token);
+    process.exit(0);
   }
 
   console.log(`

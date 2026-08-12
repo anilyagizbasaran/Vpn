@@ -1,15 +1,25 @@
 {
   "manifest_version": 3,
   "name": "VPN Client",
-  "version": "0.1.0",
-  "description": "Shows your VPN status and turns the tunnel on or off. Requires the VPN desktop app.",
+  "version": "0.2.1",
+  "description": "Shows your VPN status, turns the tunnel on or off, and closes the leaks a tunnel cannot close by itself.",
   "minimum_chrome_version": "116",
 
   "permissions": [
     "nativeMessaging",
     "storage",
-    "alarms"
+    "alarms",
+    "privacy",
+    "declarativeNetRequest",
+    "activeTab"
   ],
+
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "ads", "enabled": true, "path": "rules/ads.json" },
+      { "id": "trackers", "enabled": true, "path": "rules/trackers.json" }
+    ]
+  },
 
   "background": {
     "service_worker": "background.js",
@@ -23,6 +33,16 @@
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
       "128": "icons/icon128.png"
+    }
+  },
+
+  "commands": {
+    "toggle-tunnel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Connect or disconnect the VPN"
     }
   },
 

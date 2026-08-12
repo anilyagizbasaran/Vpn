@@ -1,0 +1,45 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "domainType": "thirdParty",
+      "requestDomains": [
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googleadservices.com",
+        "adservice.google.com",
+        "2mdn.net",
+        "amazon-adsystem.com",
+        "adnxs.com",
+        "adsrvr.org",
+        "adform.net",
+        "adroll.com",
+        "bidswitch.net",
+        "casalemedia.com",
+        "criteo.com",
+        "criteo.net",
+        "media.net",
+        "openx.net",
+        "pubmatic.com",
+        "rubiconproject.com",
+        "serving-sys.com",
+        "sharethrough.com",
+        "smartadserver.com",
+        "taboola.com",
+        "outbrain.com",
+        "teads.tv",
+        "yieldmo.com",
+        "zedo.com",
+        "moatads.com",
+        "adcolony.com",
+        "applovin.com",
+        "unityads.unity3d.com",
+        "inmobi.com",
+        "smaato.net",
+        "mopub.com"
+      ]
+    }
+  }
+]

@@ -13,15 +13,76 @@
           <p id="stage" class="stage">Checking…</p>
           <p id="detail" class="detail">Talking to the VPN service</p>
         </div>
+        <span id="uptime" class="uptime" hidden></span>
       </div>
 
       <button id="toggle" class="toggle" disabled>…</button>
 
       <p id="error" class="error" hidden></p>
 
+      <section class="settings">
+        <h2 class="settings-title">Protection</h2>
+
+        <label class="row" for="webrtc">
+          <span class="row-text">
+            <span class="row-label">Block WebRTC leaks</span>
+            <span class="row-hint" id="webrtc-hint"></span>
+          </span>
+          <select id="webrtc" class="select">
+            <option value="safe">On</option>
+            <option value="strict">Strict</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+
+        <label class="row" for="killSwitch">
+          <span class="row-text">
+            <span class="row-label">Kill switch</span>
+            <span class="row-hint">Block browsing when the tunnel is down</span>
+          </span>
+          <input type="checkbox" id="killSwitch" class="check" />
+        </label>
+
+        <label class="row" for="autoConnect">
+          <span class="row-text">
+            <span class="row-label">Connect on browser start</span>
+            <span class="row-hint">Reuses the last connection</span>
+          </span>
+          <input type="checkbox" id="autoConnect" class="check" />
+        </label>
+
+        <h2 class="settings-title">Blocking</h2>
+
+        <label class="row" for="blockAds">
+          <span class="row-text">
+            <span class="row-label">Block ads</span>
+            <span class="row-hint">Known ad networks, third-party only</span>
+          </span>
+          <input type="checkbox" id="blockAds" class="check" />
+        </label>
+
+        <label class="row" for="blockTrackers">
+          <span class="row-text">
+            <span class="row-label">Block trackers</span>
+            <span class="row-hint">Analytics, attribution and social beacons</span>
+          </span>
+          <input type="checkbox" id="blockTrackers" class="check" />
+        </label>
+
+        <label class="row" for="allowSite" id="allow-site-row" hidden>
+          <span class="row-text">
+            <span class="row-label">Allow <span id="site-name">this site</span></span>
+            <span class="row-hint">Stop blocking here — for sites that break</span>
+          </span>
+          <input type="checkbox" id="allowSite" class="check" />
+        </label>
+      </section>
+
       <p class="footnote">
         This extension shows and controls the tunnel the desktop app created.
-        A browser extension cannot create a VPN tunnel on its own.
+        A browser extension cannot create a VPN tunnel on its own — but it can
+        close the WebRTC leak, which the tunnel cannot.
+        <span class="shortcut">Ctrl+Shift+U</span> toggles it.
       </p>
     </main>
 

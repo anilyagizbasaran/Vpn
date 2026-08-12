@@ -122,6 +122,41 @@ jobs:
       - name: The agent image carries wg
         run: docker run --rm --entrypoint wg vpn-node-agent:ci --version
 
+  publish:
+    name: Publish images
+    needs: images
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # install.sh pulls these rather than building. The web image in
+      # particular needs the whole Flutter workspace and a 2 GB toolchain to
+      # build, which is not something to ask of the VPS someone just rented.
+      - name: Build and push
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          for image in "vpn-control-plane:./server:server/Dockerfile" \
+                       "vpn-node-agent:./vpnd:vpnd/Dockerfile" \
+                       "vpn-web:.:website/Dockerfile"; do
+            name="${image%%:*}"; rest="${image#*:}"
+            context="${rest%%:*}"; dockerfile="${rest#*:}"
+            tag="ghcr.io/$owner/$name:latest"
+            echo "::group::$tag"
+            docker build -t "$tag" -f "$dockerfile" "$context"
+            docker push "$tag"
+            echo "::endgroup::"
+          done
+
   extension:
     name: Browser extension
     runs-on: ubuntu-latest
@@ -131,6 +166,72 @@ jobs:
         run: |
           python3 -c "import json,sys; json.load(open('extension/manifest.json'))"
           python3 -c "import json,sys; json.load(open('extension/native-host/com.example.vpn_client.json'))"
+
+      # Chrome refuses to load the whole extension when a single referenced
+      # file is missing, and says so only in a dialog nobody sees in CI. The
+      # icons were absent for the extension's entire life until someone tried
+      # to install it.
+      - name: Every file the manifest names exists
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          m = json.load(open('extension/manifest.json'))
+          refs = [m['background']['service_worker'], m['action']['default_popup']]
+          refs += list(m['icons'].values())
+          refs += list(m['action']['default_icon'].values())
+          missing = [r for r in sorted(set(refs)) if not os.path.exists(os.path.join('extension', r))]
+          if missing:
+              print('missing:', ', '.join(missing)); sys.exit(1)
+          print('all', len(set(refs)), 'referenced files present')
+          PY
+
+      # A malformed rule file does not fail loudly: Chrome disables the whole
+      # ruleset and the blocking silently stops working.
+      - name: The blocking rules are well formed
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          # Chrome validates rules against a strict schema and rejects the
+          # whole ruleset over one unknown field — a "//" comment key in a rule
+          # is enough to silently turn blocking off.
+          RULE = {'id', 'priority', 'action', 'condition'}
+          ACTION = {'type', 'redirect', 'requestHeaders', 'responseHeaders'}
+
+          m = json.load(open('extension/manifest.json'))
+          if any(k.startswith('//') for k in m):
+              print('manifest.json has comment keys; Chrome reports them as unrecognized')
+              sys.exit(1)
+
+          total = 0
+          for res in m['declarative_net_request']['rule_resources']:
+              path = os.path.join('extension', res['path'])
+              rules = json.load(open(path))
+              ids = [r['id'] for r in rules]
+              if len(ids) != len(set(ids)):
+                  print(f'{path}: duplicate rule ids'); sys.exit(1)
+              for r in rules:
+                  extra = set(r) - RULE
+                  if extra:
+                      print(f"{path}: rule {r['id']} has fields the schema rejects: {extra}"); sys.exit(1)
+                  if set(r['action']) - ACTION:
+                      print(f"{path}: rule {r['id']} has an unknown action field"); sys.exit(1)
+                  cond = r['condition']
+                  # thirdParty is what keeps a site's own resources loading.
+                  if cond.get('domainType') != 'thirdParty':
+                      print(f"{path}: rule {r['id']} is not limited to third parties"); sys.exit(1)
+                  for d in cond['requestDomains']:
+                      if d.startswith('*') or '/' in d or d != d.lower():
+                          print(f'{path}: bad domain {d}'); sys.exit(1)
+                  total += len(cond['requestDomains'])
+          print(f'{total} domains across {len(m["declarative_net_request"]["rule_resources"])} rulesets')
+          PY
+
+      - name: The scripts parse
+        run: |
+          for f in extension/background.js extension/popup.js; do
+            node --input-type=module -e "$(cat "$f")" 2>&1 | grep -q SyntaxError && { echo "::error::$f has a syntax error"; exit 1; }
+            echo "ok $f"
+          done
       - name: Refuse unreplaced placeholders in a release build
         if: github.ref == 'refs/heads/main'
         run: |

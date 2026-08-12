@@ -65,9 +65,22 @@ body {
   background: var(--error-fg);
 }
 
+.status > div {
+  min-width: 0;
+  flex: 1;
+}
+
 .stage {
   margin: 0;
   font-weight: 600;
+}
+
+/* Tabular figures so the minute ticking over does not shift the layout. */
+.uptime {
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail {
@@ -109,9 +122,77 @@ body {
   font-size: 12.5px;
 }
 
+.settings {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-title {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  cursor: pointer;
+}
+
+.row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.row-label {
+  font-size: 13px;
+}
+
+.row-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.select {
+  flex: none;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .footnote {
   margin: 14px 0 0;
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.4;
+}
+
+.shortcut {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
 }

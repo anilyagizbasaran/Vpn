@@ -25,8 +25,16 @@ class ApiClient {
 
   final SessionStore store;
   final http.Client _http;
-  final String _baseUrl;
+  String _baseUrl;
   final Duration _timeout;
+
+  /// Where requests go. Settable because a self-hosted deployment can move,
+  /// and rebuilding every installed client to follow it is not a reasonable
+  /// answer. Changing it is only safe while signed out: tokens and the
+  /// registered device belong to one control plane, so the caller has to clear
+  /// them — see [VpnServerAddress].
+  String get baseUrl => _baseUrl;
+  set baseUrl(String value) => _baseUrl = value.replaceAll(RegExp(r'/+$'), '');
 
   Future<bool>? _refreshInFlight;
 

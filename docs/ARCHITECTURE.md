@@ -1,197 +1,209 @@
-# Mimari
+# Architecture
 
-Bu dosya sistemin **neden** böyle kurulduğunu anlatır. Nasıl kurulacağı
-[GO-LIVE.md](GO-LIVE.md)'de, ayar ve sorun giderme [TUNING.md](TUNING.md)'de.
+This file explains **why** the system is shaped this way. How to deploy it is
+in [GO-LIVE.md](GO-LIVE.md); tuning and troubleshooting in [TUNING.md](TUNING.md).
 
-## Temel ilke
+## The principle
 
-Hiçbir bileşenin ele geçirilmesi tek başına yeterli olmasın.
+Compromising any one component should not be enough.
 
-| Bileşen | Ne biliyor | Ne bilmiyor |
+| Component | Knows | Does not know |
 |---|---|---|
-| Control plane (`server/`) | E-posta, parola hash'i, **açık anahtarlar** | Özel anahtarları; WireGuard'a hiç dokunmaz |
-| Node ajanı (`vpn-node-agent`) | Interface'i değiştirebilir | Hesabı, token'ı, kullanıcıları |
-| İstemci (`apps/client`) | Hesap kimliği, **özel anahtar** | Ağ arayüzüne dokunamaz (masaüstünde) |
-| Masaüstü servisi (`vpnd`) | Yerel tüneli kurar | Hesabı — API'ye hiç çıkmaz |
-| Eklenti (`extension/`) | Tünel açık mı kapalı mı | Config göremez, üretemez |
+| Control plane (`server/`) | Emails, password hashes, **public keys** | Private keys. It never touches WireGuard |
+| Node agent (`vpn-node-agent`) | How to change the interface | Accounts, tokens, users |
+| Client (`apps/client`) | Account identity, **the private key** | It cannot touch the network interface (on desktop) |
+| Desktop service (`vpnd`) | How to bring a local tunnel up | The account — it never calls the API |
+| Extension (`extension/`) | Whether the tunnel is up | It cannot see or produce a config |
 
-Sonuçları:
+What follows from that:
 
-- Sunucu diski ele geçse trafiği kimse çözemez; özel anahtarlar orada yok.
-- Control plane ele geçse hiçbir node'da komut çalıştırılamaz; dışarı aramıyor.
-- Bir node ele geçse hesaplar alınamaz; node token'ı sadece kendi peer setini
-  görüyor.
-- `vpnd` ele geçse hesap alınamaz, GUI ele geçse root olunamaz.
+- If the server's disk is taken, nobody can decrypt the traffic; the private
+  keys are not there.
+- If the control plane is taken, no command runs on any node; it never dials
+  out.
+- If a node is taken, accounts are safe; the node token only sees that node's
+  own peer set.
+- If `vpnd` is taken you do not get the account; if the GUI is taken you do not
+  get root.
 
-Bedeli açık: **özel anahtar kaybolursa cihaz kurtarılamaz.** Sunucuda kopyası
-yok. Uygulama bunu cihazı silip yenisini kaydederek çözüyor.
+The cost is plain: **lose the private key and the device cannot be recovered.**
+There is no copy on the server. The app deals with it by revoking the device
+and registering a new one.
 
-## İki düzlem
-
-```
-KONTROL DÜZLEMİ                          VERİ DÜZLEMİ
-───────────────                          ────────────
-İstemci ──HTTPS──> Caddy ──> Node        İstemci ──UDP 51820──> WireGuard
-          :443            :3000                                  (wg0)
-                            │                                      ▲
-                         SQLite                                    │
-                            ▲                              vpn-node-agent
-                            └──── POST /node/sync ──────────────────┘
-                                  (ajan çeker, 10sn)
-```
-
-Trafik API'ye hiç uğramaz. Control plane çökerse mevcut tüneller çalışmaya
-devam eder — ajan son gördüğü peer setini koruyor.
-
-## Katmanlar
-
-Tek kural: **üst katman alt katmanı bilir, alt katman üstü asla bilmez.**
+## Two planes
 
 ```
-L4  apps/client   apps/dashboard   extension/       ← birbirini tanımaz
+CONTROL PLANE                            DATA PLANE
+─────────────                            ──────────
+Client ──HTTPS──> Caddy ──> Node         Client ──UDP 51820──> WireGuard
+          :443           :3000                                  (wg0)
+                           │                                      ▲
+                        SQLite                                    │
+                           ▲                              vpn-node-agent
+                           └──── POST /node/sync ──────────────────┘
+                                 (the agent pulls, every 10s)
+```
+
+Traffic never reaches the API. If the control plane goes down, existing tunnels
+keep working — the agent holds the last peer set it saw.
+
+## Layers
+
+One rule: **an upper layer knows the layer below; the lower one never knows the
+upper.**
+
+```
+L4  apps/client   apps/dashboard   extension/       ← none of these know each other
     ────────────────────────────────────────────
-L3  vpn_client    oturum · cihaz kimliği · rotasyon · bölge seçimi
-L2  vpn_tunnel    tünel sözleşmesi (saf Dart)
+L3  vpn_client    session · device identity · rotation · region selection
+L2  vpn_tunnel    the tunnel contract (pure Dart)
       ├─ vpn_tunnel_mobile    wireguard_flutter_plus
-      └─ vpn_tunnel_desktop   vpnd IPC istemcisi
-L1  vpn_api       HTTP + modeller      (Flutter yok, dart:io yok)
-L0  vpn_crypto    X25519               (bağımlılıksız)
+      └─ vpn_tunnel_desktop   vpnd IPC client
+L1  vpn_api       HTTP + models       (no Flutter, no dart:io)
+L0  vpn_crypto    X25519              (one dependency: package:cryptography)
 ```
 
-Üç sınır bilerek çizildi:
+Three boundaries were drawn deliberately:
 
-1. **`SessionStore` / `DeviceStore`** — `vpn_api` Flutter'sız ve `dart:io`suz
-   kalsın diye. Karşılığı somut: `apps/dashboard` aynı API istemcisini web'de
-   derliyor, ve CI her push'ta o build'i çalıştırarak sınırı koruyor. Ayrıca
-   cihaz özel anahtarı mimari olarak API katmanının erişemeyeceği yerde.
-2. **`TunnelStage`** — plugin'in enum'u yerine kendi sözlüğümüz. Masaüstünde
-   plugin yerine daemon istemcisi koymak **tek paketi** etkiledi.
-3. **`ApiClient` transport hatalarını `dart:io` olmadan yakalıyor** — web'de
-   derlenebilmesi için zorunluydu; yan etkisi olarak TLS hatalarını da
-   kapsıyor, ki eskiden kaçırıyorduk.
+1. **`SessionStore` / `DeviceStore`** — so `vpn_api` stays free of Flutter and
+   `dart:io`. The payoff is concrete: `apps/dashboard` compiles the same API
+   client for the web, and CI runs that build on every push to keep the
+   boundary honest. It also puts the device private key architecturally out of
+   reach of the API layer.
+2. **`TunnelStage`** — our own vocabulary instead of the plugin's enum.
+   Replacing the plugin with a daemon client on desktop touched **one package**.
+3. **`ApiClient` catches transport errors without `dart:io`** — required so it
+   compiles for the web. A side effect is that it also covers TLS errors, which
+   it used to miss.
 
-## Veri modeli
+## Data model
 
 ```
 users
- └─ devices        tek keypair · kotanın saydığı şey · kullanıcının gördüğü şey
-      └─ peers     cihazı bir sunucuya bağlayan adres tahsisi
+ └─ devices        one keypair · what the quota counts · what the user sees
+      └─ peers     the address allocation binding a device to a server
            └─ peer_usage
 servers (nodes)    agent_token_hash · status · last_seen_at · reported_public_key
 ```
 
-**Neden `devices` ve `peers` ayrı:** başta peer'ın kendisi cihazdı. İkinci
-sunucuda bu kırılıyor — bir cihazın ulaşabildiği her sunucuda adresi olması
-gerekiyor ve bunları beş cihaz limitine saymak, üç bölgenin tek telefonla
-kotayı tüketmesi demek olurdu.
+**Why `devices` and `peers` are separate:** originally the peer *was* the
+device. That breaks on the second server — a device needs an address on every
+server it can reach, and counting those against a five-device limit would mean
+three regions exhaust the quota from one phone.
 
-**Neden tek anahtar, çok sunucu:** WireGuard (istemci, sunucu) çifti bazında
-doğruluyor, aynı istemci anahtarının birden çok sunucuyla eşleşmesi normal.
-Bölge değiştirmeyi bir round trip değil, config'de tek satır yapan şey bu.
-Mullvad'ın modeli.
+**Why one key across many servers:** WireGuard authenticates per (client,
+server) pair, so the same client key matching several servers is normal. That
+is what makes switching region a single line in a config rather than a round
+trip. It is Mullvad's model.
 
-> Çoklu sunucu şu an kullanılmıyor. Şema, node protokolü ve istemcideki bölge
-> seçimi hazır; ikinci node eklemek `npm run node:add` ve bir ajan kurulumu.
+> Multi-node is not in use. The schema, the node protocol and client-side
+> region selection are ready; adding a second node is `npm run node:add` plus
+> an agent install.
 
-## Uçtan uca akış
+## End to end
 
 ```
-1. KAYIT       POST /auth/register → access (JWT 15dk) + refresh (opaque 30g)
+1. REGISTER    POST /auth/register → access (JWT, 15 min) + refresh (opaque, 30 days)
 
-2. CİHAZ       İstemci X25519 çifti üretir; özel anahtar secure storage'a
+2. DEVICE      The client generates an X25519 pair; the private key goes to
+               secure storage
                POST /devices {publicKey, platform}
-               Control plane: kota → her aktif node'da havuzdan adres → DB
-               ← .conf, ama PrivateKey = <PRIVATE_KEY>
+               Control plane: quota → an address from every active node's pool → DB
+               ← a .conf, but with PrivateKey = <PRIVATE_KEY>
 
-3. YAYILMA     Ajan POST /node/sync ile peer setini çeker (≤10sn)
-               Tek bir `wg set` çağrısıyla uygular
+3. PROPAGATION The agent pulls the peer set with POST /node/sync (≤10s)
+               and applies it in a single `wg set`
 
-4. TÜNEL       İstemci placeholder'ı kendi anahtarıyla değiştirir
-               mobil:     doğrudan VpnService / NetworkExtension
-               masaüstü:  AF_UNIX soketi üzerinden vpnd'ye verir
+4. TUNNEL      The client substitutes its own key for the placeholder
+               mobile:   straight to VpnService / NetworkExtension
+               desktop:  handed to vpnd over an AF_UNIX socket
 
-5. ROTASYON    Anahtar 7 günden eskiyse POST /devices/:id/rotate
-               Cihaz id'si, etiketi ve **tüm adresleri** aynı kalır
+5. ROTATION    If the key is older than 7 days, POST /devices/:id/rotate
+               The device id, its label and **all its addresses** stay the same
 ```
 
-## Neden bu kararlar
+## Why these decisions
 
-**Control plane WireGuard'a hiç dokunmuyor.** Anahtarları istemci üretiyor,
-PSK 32 rastgele bayt, peer'ları ajanlar uyguluyor. Geriye `wg`'ye ihtiyaç
-duyan hiçbir şey kalmadı — API ayrıcalıksız, container'da, WireGuard kurulu
-olmayan bir makinede çalışabiliyor.
+**The control plane never touches WireGuard.** The client generates the keys,
+the PSK is 32 random bytes, and agents apply the peers. Nothing is left that
+needs `wg` — the API is unprivileged, containerisable, and runs on a machine
+with no WireGuard installed.
 
-**Node'lar çeker, control plane hiç dışarı aramaz.** Push modeli control
-plane'de her node'un root'unu veren bir kimlik gerektirirdi ve her node'un
-oradan erişilebilir olmasını isterdi. Çekme modelinde node WireGuard portu
-dışında hiçbir şey açmıyor.
+**Nodes pull; the control plane never dials out.** A push model would need a
+credential on the control plane that grants root on every node, and would
+require every node to be reachable from it. Pulling means a node exposes
+nothing but the WireGuard port.
 
-**Bunun bedeli:** iptal **anında değil**, bir poll aralığında yayılıyor
-(`NODE_POLL_SECONDS`, varsayılan 10sn). Bilinçli takas.
+**The cost of that:** revocation is **not instant**, it propagates within one
+poll interval (`NODE_POLL_SECONDS`, default 10s). A deliberate trade.
 
-**Ajan durum tutmuyor.** Control plane ne cevaplarsa doğru odur; bir saat
-offline kalan node ilk başarılı sync'te kendine geliyor. Reboot için ayrı bir
-kurtarma yolu yok — aynı yol.
+**The agent keeps no state.** Whatever the control plane answers is the truth;
+a node that was offline for an hour converges on its first successful sync.
+There is no separate recovery path after a reboot — it is the same path.
 
-**Sync başarısız olursa ajan peer tablosuna dokunmuyor.** Control plane
-kesintisini tam kesintiye çevirmek yanlış yön.
+**A failed sync leaves the peer table alone.** Turning a control-plane outage
+into a total outage is the wrong direction.
 
-**İstemci açık anahtarını da saklıyor.** Bağlanırken sunucununkiyle
-karşılaştırıyor; uyuşmazsa (yarıda kalmış rotasyon, yedekten geri yükleme)
-anahtarı yeniliyor — yoksa tünel sonsuza kadar "connecting"de kalır ve hiçbir
-yerde hata görünmez.
+**The client stores its public key too.** On connect it compares against the
+server's; on a mismatch (an interrupted rotation, a restore from backup) it
+rotates. Without that, the tunnel would sit at "connecting" forever with no
+error shown anywhere.
 
-**Masaüstünde ayrıcalıklı daemon.** GUI'yi yükseltilmiş çalıştırmak Flutter'ın
-tüm saldırı yüzeyini root'a taşır. Mullvad ve Tailscale aynı şekilde bölüyor.
+**A privileged daemon on desktop.** Running the GUI elevated would put
+Flutter's entire attack surface at root. Mullvad and Tailscale split the same
+way.
 
-**`vpnd` config'i allowlist'liyor.** wg-quick `PostUp` satırlarını root olarak
-çalıştırıyor ve sokete ayrıcalıksız bir süreç ulaşabiliyor; anahtar allowlist'i
-olmasa yerel herhangi bir kullanıcı root shell alırdı. Blocklist değil
-allowlist: wg-quick'e ileride eklenecek ve bir şey çalıştıran bir anahtar
-varsayılan olarak reddedilsin.
+**`vpnd` allowlists config keys.** wg-quick runs `PostUp` lines as root, and an
+unprivileged process can reach the socket; without the allowlist any local user
+would have a root shell. An allowlist rather than a blocklist, so that a key
+added to wg-quick later that runs something is refused by default.
 
-**Soket AF_UNIX, loopback TCP değil.** Localhost TCP'ye makinedeki her süreç
-ulaşır, ACL uygulanamaz ve tarayıcıdan POST atılabilir — Tailscale'in Windows
-istemcisi tam bu yüzden zafiyet aldı. Dart'ın Windows'ta AF_UNIX desteklediğini
-ölçtük (`packages/vpn_tunnel/tool/af_unix_probe.dart`), varsaymadık.
+**The socket is AF_UNIX, not loopback TCP.** Every process on the machine can
+reach localhost TCP, no ACL applies, and a browser can POST to it — which is
+exactly how Tailscale's Windows client got a vulnerability. Dart's AF_UNIX
+support on Windows was measured, not assumed
+(`packages/vpn_tunnel/tool/af_unix_probe.dart`).
 
-**Eklenti config gönderemez.** Köprü tam üç eyleme izin veriyor: status,
-connect, disconnect. "Connect", daemon'un o oturumda zaten kabul ettiği
-config'i yeniden uyguluyor.
+**The extension cannot send a config.** The bridge permits exactly three
+actions: status, connect, disconnect. "Connect" re-applies the config the
+daemon already accepted in this session.
 
-**Bilinmeyen durum "kapalı" değildir.** Eklenti rozeti daemon'a ulaşamazsa `?`
-gösteriyor, node'un liveness'ı bilinmiyorsa `online: false`. Korumasızken
-"kapalı" demek doğru; bilinmezken "kapalı" demek yanıltıcı.
+**Unknown is not "off".** The extension badge shows `?` when it cannot reach the
+daemon, and a node whose liveness is unknown reports `online: false`. Saying
+"off" while unprotected is correct; saying "off" while unknown is misleading.
 
-## Test stratejisi
+## Test strategy
 
-Gerçek yolları test ediyoruz, mock'lanmış kopyaları değil:
+We test the real paths, not mocked copies of them:
 
-| Ne | Nasıl |
+| What | How |
 |---|---|
-| `wg` CLI (ajan) | `Runner` enjeksiyonu — tam argv doğrulanıyor |
-| `flutter_secure_storage` | Platform kanalı mock'lanıyor, gerçek `SecureStore` çalışıyor |
-| vpnd IPC | Dart tarafında gerçek AF_UNIX soketi üzerinden sahte daemon |
-| Node protokolü | Gerçek HTTP, iki node ile izolasyon ve eş zamanlı tahsis |
-| Anahtar türetme | **RFC 7748 §6.1 test vektörleri** — kendi kendine tutarlılık değil |
-| Native messaging | Gerçek çerçeveleme ile stdio round-trip |
+| The `wg` CLI (agent) | `Runner` injection — the exact argv is asserted |
+| `flutter_secure_storage` | The platform channel is mocked; the real `SecureStore` runs |
+| vpnd IPC | A fake daemon over a real AF_UNIX socket, from the Dart side |
+| The node protocol | Real HTTP, two nodes, isolation and concurrent allocation |
+| Key derivation | **RFC 7748 §6.1 test vectors** — not self-consistency |
+| Native messaging | A stdio round trip with real framing |
 
-Anahtar türetme neden vektörlere sabitlendi: yanlış türetmede tünel hiçbir hata
-vermeden asla handshake yapmaz. Kendi kendini doğrulayan bir test bunu kaçırır.
+Why key derivation is pinned to vectors: a wrong derivation produces a tunnel
+that never handshakes and never reports an error. A self-consistent test misses
+it entirely.
 
-`acceptance.mjs --check-wg` mock'un asla yakalayamayacağı tek şeyi yakalıyor:
-cihaz oluşturup anahtarın `wg show`'da **belirmesini bekliyor**, yani API →
-veritabanı → ajan → `wg` zincirinin tamamını sınıyor.
+`acceptance.mjs --check-wg` catches the one thing no mock can: it creates a
+device and **waits for the key to appear in `wg show`**, exercising the whole
+API → database → agent → `wg` chain.
 
-## Bilerek yapılmayanlar
+## Deliberately not built
 
-1. **Kod imzalama** — para ve evrak işi. Windows OV sertifikası ~$200-400/yıl,
-   Apple Developer $99/yıl + notarization.
-2. **E-posta doğrulama** — SMTP sağlayıcı seçimi ürün kararı. Yarım bir akış
-   hiç olmamasından kötü.
-3. **Ödeme/abonelik** — kayıt olan herkes 5 cihaz alıyor.
-4. **iOS Network Extension** — entitlement başvurusu gerekiyor, haftalar sürer.
-5. **Masaüstünde kill switch** — daemon firewall kurallarını yazabilir ama
-   yazmıyor. Android'de OS'un yerleşiği kullanılıyor.
-6. **Bölge seçici UI** — `VpnController.selectServer()` hazır, ekranda düğmesi
-   yok. Çoklu sunucu kullanılmaya başlanınca eklenecek.
+1. **Code signing** — procurement, not code. A Windows OV certificate is
+   $200–400/year, Apple Developer $99/year plus notarisation.
+2. **Email verification** — choosing an SMTP provider is a product decision, and
+   half a flow is worse than none.
+3. **Payment and subscriptions** — everyone who registers gets five devices.
+4. **iOS Network Extension** — needs an entitlement application, which takes
+   weeks. Apply early.
+5. **A desktop kill switch** — the daemon can write firewall rules but does not.
+   Android uses the OS's built-in one. The browser extension has its own, which
+   only covers the browser.
+6. **Region picker UI** — `VpnController.selectServer()` is ready and has no
+   button. It arrives when a second node does.

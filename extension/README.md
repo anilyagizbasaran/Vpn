@@ -6,7 +6,75 @@
 VPN tüneli açamaz — `chrome.vpnProvider` API'si sadece ChromeOS'ta var.
 
 **Yapar:** masaüstü uygulamasının kurduğu tünelin durumunu gösterir, açıp
-kapatır. Rozette anlık durum, popup'ta tek tuşla bağlan/kes.
+kapatır. Rozette anlık durum, popup'ta tek tuşla bağlan/kes, `Ctrl+Shift+U`
+ile klavyeden.
+
+**Ve tünelin kapatamadığı deliği kapatır.** Asıl gerekçesi bu:
+
+| Ayar | Ne yapıyor |
+|---|---|
+| **WebRTC** (varsayılan: açık) | WebRTC, sayfa JavaScript'ine ağ adaptörlerini doğrudan sorar; tünel açıkken bile gerçek adresini sızdırabilir. Masaüstü uygulaması bunu engelleyemez, sadece tarayıcı engelleyebilir. `Açık` yerel adresleri gizler ve görüşmeleri bozmaz; `Katı` proxy'lenmemiş UDP'yi tamamen reddeder (görüntülü görüşmeler çalışmayabilir). |
+| **Kill switch** (varsayılan: kapalı) | Tünel düştüğünde tarayıcı isteklerini keser. |
+| **Açılışta bağlan** (varsayılan: kapalı) | Tarayıcı açılınca son bağlantıyı yeniden kurar. |
+
+Kill switch **daemon'a ulaşılamadığında engellemez.** Bu bilinçli: rozetin
+`?` göstermesiyle aynı ilke — bilinmeyen, "kapalı" değildir. Ulaşılamadığında
+engellemek, tarayıcıyı internetten tamamen koparır ve durumu açıklayacak
+sayfa da dahil her şeyi kapatır. Popup her hâlükârda çalışır; eklenti
+sayfaları bu kurallara tabi değil.
+
+### Reklam ve izleyici engelleme
+
+Varsayılan olarak **açık**. 77 alan adı, iki ayrı listede:
+
+- `rules/ads.json` — reklam ağları (doubleclick, criteo, taboola, adnxs…)
+- `rules/trackers.json` — analitik (google-analytics, hotjar, mixpanel…),
+  atıf SDK'ları (appsflyer, adjust, branch) ve sosyal işaretçiler
+  (connect.facebook.net, analytics.tiktok.com…)
+
+Üç tasarım kararı:
+
+**Listeler eklentinin içinde geliyor, uzaktan çekilmiyor.** Uzaktan çekmek host
+izni ve ağ çağrısı isterdi — yani bu eklentinin üzerine kurulu olduğu özelliği
+yok ederdi.
+
+**Hepsi `thirdParty`.** Bir sitenin kendi alan adından gelen kaynaklar
+engellenmiyor; sadece üçüncü taraf istekleri. Analitiğini kendi alan adı
+altında barındıran siteler bozulmuyor.
+
+**Sosyal listede ana alan adları yok.** `connect.facebook.net` engelleniyor ama
+`facebook.com` engellenmiyor — hedef, tıklanmasa bile göründüğü her sayfayı
+raporlayan işaretçiler, sitelerin kendisi değil.
+
+**Site bazlı izin:** popup'ta bulunduğun sitenin adıyla bir satır çıkıyor —
+"Allow example.com". Reklam çağrısı başarısız olunca bozulan siteler için
+engellemeyi her yerde kapatmak yerine tek siteyi muaf tutuyorsun. Kural
+`initiatorDomains` ile yazılıyor: o sitenin *yaptığı* isteklere izin veriyor.
+
+Siteyi öğrenmek için `activeTab` kullanılıyor — sadece araç çubuğu simgesine
+tıklandığında ve sadece o sekme için veriliyor. `tabs` ya da host izni aynı
+bir satırlık metin için tüm sekmeleri kalıcı olarak açardı.
+
+Öncelikler bilerek şöyle: **kill switch (30) > izin listesi (20) > engelleme
+(1)**. "Burada reklam engelleme" bir sitenin kill switch'i delmesine yol
+açmamalı — tünel düşükken izin verilen sitede gezinebilmek, kill switch'in
+tam tersi olurdu.
+
+Bu liste kısa ve seçilmiş; EasyList'ten dönüştürülmüş değil. **uBlock Origin'in
+yerini tutmaz**, makul bir varsayılandır. Kapsamı büyütmek istersen tek makul
+kaynak EasyList/EasyPrivacy (CC BY-SA 3.0, NonCommercial kaydı yok).
+DuckDuckGo Tracker Radar **verisi** CC BY-NC-SA 4.0 — kişisel kullanımda
+sorun değil ama AGPL bir depoya gömülmesi çelişki yaratır, çünkü AGPL ticari
+kullanıma izin vermek zorunda.
+
+Sınırlar bol: 4 statik kural / 30.000 garantili, 2 etkin ruleset / 50.
+
+---
+
+Bu ayarların hiçbiri **ağ izni istemiyor**: `privacy` yalnızca bir tarayıcı
+tercihini yazıyor, `declarativeNetRequest`'in engelleme kuralları host izni
+gerektirmiyor — kuralları tarayıcı uyguluyor ve sonucu eklentiye hiç
+bildirmiyor. Eklenti hâlâ hiçbir sayfayı okuyamıyor, hiçbir isteği göremiyor.
 
 ```
 Eklenti (popup + service worker)

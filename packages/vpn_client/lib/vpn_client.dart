@@ -8,6 +8,7 @@ library;
 export 'src/auth_controller.dart';
 export 'src/device_store.dart';
 export 'src/secure_store.dart';
+export 'src/server_address.dart';
 export 'src/session_end_reason.dart';
 export 'src/system_settings.dart';
 export 'src/vpn_controller.dart';

@@ -1,0 +1,76 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "domainType": "thirdParty",
+      "requestDomains": [
+        "google-analytics.com",
+        "analytics.google.com",
+        "googletagmanager.com",
+        "scorecardresearch.com",
+        "quantserve.com",
+        "quantcast.com",
+        "hotjar.com",
+        "hotjar.io",
+        "mixpanel.com",
+        "segment.com",
+        "segment.io",
+        "amplitude.com",
+        "fullstory.com",
+        "mouseflow.com",
+        "crazyegg.com",
+        "clarity.ms",
+        "chartbeat.com",
+        "chartbeat.net",
+        "parsely.com",
+        "statcounter.com",
+        "addthis.com",
+        "sharethis.com",
+        "mc.yandex.ru",
+        "matomo.cloud",
+        "kissmetrics.com",
+        "heapanalytics.com",
+        "loggly.com",
+        "bugsnag.com"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "domainType": "thirdParty",
+      "requestDomains": [
+        "branch.io",
+        "app.link",
+        "appsflyer.com",
+        "adjust.com",
+        "kochava.com",
+        "singular.net",
+        "tenjin.io"
+      ]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "domainType": "thirdParty",
+      "requestDomains": [
+        "connect.facebook.net",
+        "analytics.tiktok.com",
+        "ads.tiktok.com",
+        "analytics.twitter.com",
+        "ads-twitter.com",
+        "px.ads.linkedin.com",
+        "snap.licdn.com",
+        "sc-static.net",
+        "pixel.rubiconproject.com"
+      ]
+    }
+  }
+]

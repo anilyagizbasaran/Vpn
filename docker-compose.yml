@@ -11,10 +11,13 @@
 name: vpn
 
 services:
+  # `image` and `build` together: a server pulls the published image and never
+  # needs a toolchain, while `docker compose build` still works here. The tag
+  # is what install.sh pulls, so it has to be the one CI publishes.
   api:
     build:
       context: ./server
-    image: vpn-control-plane:local
+    image: ghcr.io/anilyagizbasaran/vpn-control-plane:latest
     restart: unless-stopped
     # Node handles SIGTERM itself, but PID 1 also has to reap the zombies that
     # any exec'd child leaves behind.
@@ -57,11 +60,15 @@ services:
   # than mounting them: the dashboard is a Flutter build, so something has to
   # compile it, and baking it in means the running stack has no build step and
   # no host directory it depends on.
+  # Building this one needs the Flutter workspace — pubspec, packages/, apps/ —
+  # which a server has no other use for, and a Flutter web build on a small VPS
+  # is a 2 GB download away from running out of memory. So it is built in CI
+  # and pulled here.
   caddy:
     build:
       context: .
       dockerfile: website/Dockerfile
-    image: vpn-web:local
+    image: ghcr.io/anilyagizbasaran/vpn-web:latest
     restart: unless-stopped
     depends_on:
       api:
@@ -95,7 +102,7 @@ services:
     profiles: [agent]
     build:
       context: ./vpnd
-    image: vpn-node-agent:local
+    image: ghcr.io/anilyagizbasaran/vpn-node-agent:latest
     restart: unless-stopped
     init: true
 

@@ -74,14 +74,29 @@ jobs:
           for package in vpn_crypto vpn_api vpn_tunnel_desktop; do
             (cd "packages/$package" && dart test) || exit 1
           done
+      # A failing run has to name the tests on the summary page. Without this
+      # the only signal is "exit code 1", and reading which test broke means
+      # downloading the log — which needs a token the repository owner may not
+      # have to hand.
       - name: Test Flutter packages
-        run: cd packages/vpn_client && flutter test
+        working-directory: packages/vpn_client
+        run: |
+          set +e
+          flutter test --reporter expanded > test.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            details=$(grep -E "\[E\]" -A 8 test.log | head -150 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Flutter tests failed::${details}"
+            cat test.log
+          fi
+          exit "$status"
 
-      # Building the dashboard is the standing proof that vpn_api still
-      # compiles for the web — that is, that nobody has quietly added Flutter
-      # or dart:io to a layer that must not have them.
-      - name: Build the web dashboard
-        run: cd apps/dashboard && flutter build web --release
+      # The standing proof that vpn_api stays web-safe: neither Flutter nor
+      # dart:io survives dart2js, so this fails the moment one is added to a
+      # layer that must not have them.
+      - name: Check vpn_api still compiles for the web
+        run: cd packages/vpn_api && dart compile js -o web_check.js example/web_check.dart
 
   images:
     name: Container images
@@ -101,7 +116,7 @@ jobs:
       - name: The API image starts and reports healthy
         run: |
           docker run -d --name api \
-            -e JWT_ACCESS_SECRET="$(head -c 32 /dev/urandom | base64 -w0)" \
+            -e TOKEN_PEPPER="$(head -c 32 /dev/urandom | base64 -w0)" \
             -e JWT_REFRESH_PEPPER="$(head -c 32 /dev/urandom | base64 -w0)" \
             -e WG_SKIP_BOOTSTRAP_NODE=true \
             vpn-control-plane:ci

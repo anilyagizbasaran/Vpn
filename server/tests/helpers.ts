@@ -6,8 +6,12 @@ import { createContainer, type Container } from '../src/container.js';
 import { hashNodeToken } from '../src/services/nodeService.js';
 import type { CreateServerInput } from '../src/db/repositories.js';
 
-export const PASSWORD = 'a-long-enough-password';
-export const NODE_TOKEN_PEPPER = 'test-refresh-pepper-not-used-in-production';
+/**
+ * Read rather than copied. It used to be a literal that happened to match
+ * tests/setup.ts, so renaming the variable there made every node token hash
+ * differently and ten tests started answering 401 with nothing saying why.
+ */
+export const NODE_TOKEN_PEPPER = process.env['TOKEN_PEPPER']!;
 
 export const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
@@ -92,26 +96,6 @@ export async function createHarness(): Promise<Harness> {
   return { app: createApp(container), container };
 }
 
-export interface TestAccount {
-  accessToken: string;
-  refreshToken: string;
-  userId: number;
-  email: string;
-}
-
-export async function registerUser(app: Express, email: string): Promise<TestAccount> {
-  const res = await request(app).post('/auth/register').send({ email, password: PASSWORD });
-  if (res.status !== 201) {
-    throw new Error(`register failed for ${email}: ${res.status} ${res.text}`);
-  }
-  return {
-    accessToken: res.body.tokens.accessToken,
-    refreshToken: res.body.tokens.refreshToken,
-    userId: res.body.user.id,
-    email,
-  };
-}
-
 /** Everything an agent would see on its next sync. */
 export async function nodeSync(
   app: Express,
@@ -131,4 +115,44 @@ export async function nodeSync(
       agentVersion: 'test-agent/1.0',
       usage: usage.map((entry) => ({ lastHandshakeAt: null, ...entry })),
     });
+}
+
+export interface EnrolledDevice {
+  deviceToken: string;
+  deviceId: number;
+  publicKey: string;
+  privateKey: string;
+  inviteToken: string;
+}
+
+/**
+ * The setup every device test needs now: an invite, and a device enrolled with
+ * it. There is no account to make: an invite is the whole of it.
+ */
+export async function enrolDevice(
+  app: Express,
+  container: Container,
+  options: { deviceLimit?: number; inviteToken?: string } = {},
+): Promise<EnrolledDevice> {
+  let inviteToken = options.inviteToken;
+  if (!inviteToken) {
+    ({ token: inviteToken } = await container.invites.mint({
+      label: 'test',
+      deviceLimit: options.deviceLimit ?? 5,
+    }));
+  }
+
+  const keys = clientKeypair();
+  const response = await request(app)
+    .post('/enroll')
+    .send({ inviteToken, publicKey: keys.publicKey, platform: 'linux' })
+    .expect(201);
+
+  return {
+    deviceToken: response.body.deviceToken as string,
+    deviceId: response.body.device.id as number,
+    publicKey: keys.publicKey,
+    privateKey: keys.privateKey,
+    inviteToken,
+  };
 }

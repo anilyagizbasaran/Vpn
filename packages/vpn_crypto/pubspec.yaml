@@ -8,7 +8,7 @@ environment:
   sdk: ^3.11.4
 
 # Deliberately no Flutter dependency: this layer has to be usable from the web
-# dashboard, from tests, and from any future CLI without dragging in a UI
+# apps, from tests, and from any future CLI without dragging in a UI
 # toolkit. Adding `flutter` here would be an architecture regression.
 dependencies:
   cryptography: ^2.9.0

@@ -20,13 +20,20 @@ afterEach(() => {
   vi.resetModules();
 });
 
+let tokenPepper: (source: {
+  TOKEN_PEPPER?: string | undefined;
+  JWT_REFRESH_PEPPER?: string | undefined;
+}) => string;
+
 async function loadEnv(overrides: Record<string, string | undefined>) {
   process.env = {};
   for (const [key, value] of Object.entries({ ...BASE, ...overrides })) {
     if (value !== undefined) process.env[key] = value;
   }
   vi.resetModules();
-  return (await import('../src/config/env.js')).env;
+  const module = await import('../src/config/env.js');
+  tokenPepper = module.tokenPepper;
+  return module.env;
 }
 
 describe('valid configuration', () => {
@@ -34,10 +41,8 @@ describe('valid configuration', () => {
     const env = await loadEnv({});
 
     expect(env.PORT).toBe(3000);
-    expect(env.MAX_DEVICES_PER_USER).toBe(5);
     expect(env.WG_INTERFACE).toBe('wg0');
     expect(env.WG_CLIENT_MTU).toBe(1420);
-    expect(env.REFRESH_TTL_DAYS).toBe(30);
     // 0 = trust nothing. Assuming a proxy that is not there is the unsafe
     // direction, so it must not be the default.
     expect(env.TRUST_PROXY).toBe(0);
@@ -46,13 +51,10 @@ describe('valid configuration', () => {
   it('coerces numbers and booleans from strings', async () => {
     const env = await loadEnv({
       PORT: '8080',
-      MAX_DEVICES_PER_USER: '3',
       NODE_POLL_SECONDS: '10',
-      
     });
 
     expect(env.PORT).toBe(8080);
-    expect(env.MAX_DEVICES_PER_USER).toBe(3);
     expect(env.NODE_POLL_SECONDS).toBe(10);
     expect(env.WG_ENABLE_PRESHARED_KEY).toBe(false);
   });
@@ -66,9 +68,8 @@ describe('valid configuration', () => {
 });
 
 describe('rejected configuration', () => {
-  it('refuses a missing or short signing secret', async () => {
-    await expect(loadEnv({ JWT_ACCESS_SECRET: undefined })).rejects.toThrow(/JWT_ACCESS_SECRET/);
-    await expect(loadEnv({ JWT_ACCESS_SECRET: 'tooshort' })).rejects.toThrow(/JWT_ACCESS_SECRET/);
+  it('refuses a pepper too short to be worth hashing with', async () => {
+    await expect(loadEnv({ TOKEN_PEPPER: 'tooshort' })).rejects.toThrow(/TOKEN_PEPPER/);
   });
 
   it('refuses an out-of-range port', async () => {
@@ -116,14 +117,10 @@ describe('production guard rails', () => {
     ).resolves.toMatchObject({ WG_SKIP_BOOTSTRAP_NODE: true });
   });
 
-  it('refuses placeholder secrets copied from .env.example', async () => {
+  it('refuses a placeholder secret copied from .env.example', async () => {
     await expect(
-      loadEnv({ ...PROD, JWT_ACCESS_SECRET: 'CHANGE_ME_generate_with_npm_run_keygen' }),
-    ).rejects.toThrow(/JWT_ACCESS_SECRET still holds the placeholder/);
-
-    await expect(
-      loadEnv({ ...PROD, JWT_REFRESH_PEPPER: 'CHANGE_ME_generate_with_npm_run_keygen' }),
-    ).rejects.toThrow(/JWT_REFRESH_PEPPER still holds the placeholder/);
+      loadEnv({ ...PROD, TOKEN_PEPPER: 'CHANGE_ME_generate_with_npm_run_keygen' }),
+    ).rejects.toThrow(/TOKEN_PEPPER still holds the placeholder/);
   });
 
   it('starts, but warns, when no proxy is trusted', async () => {
@@ -144,5 +141,37 @@ describe('production guard rails', () => {
     expect(env.NODE_ENV).toBe('production');
     expect(env.WG_SKIP_BOOTSTRAP_NODE).toBe(false);
     expect(env.TRUST_PROXY).toBe(1);
+  });
+});
+
+describe('the pepper rename', () => {
+  it('still accepts the name a deployed .env already uses', async () => {
+    // Renaming it outright would rehash every invite, device token and node
+    // token at once. Every credential would stop working, and nothing would
+    // say why — so the old name keeps working.
+    const env = await loadEnv({
+      TOKEN_PEPPER: undefined,
+      JWT_REFRESH_PEPPER: 'a-sufficiently-long-refresh-pepper',
+    });
+
+    expect(tokenPepper(env)).toBe('a-sufficiently-long-refresh-pepper');
+  });
+
+  it('prefers the new name when both are set', async () => {
+    const env = await loadEnv({
+      TOKEN_PEPPER: 'the-new-name-pepper-value',
+      JWT_REFRESH_PEPPER: 'a-sufficiently-long-refresh-pepper',
+    });
+
+    expect(tokenPepper(env)).toBe('the-new-name-pepper-value');
+  });
+
+  it('refuses to start when neither is set', async () => {
+    await loadEnv({});
+
+    // A literal rather than a loaded env: dotenv repopulates process.env from
+    // the developer's own .env, so "neither is set" is not a state loadEnv can
+    // reach on a machine that has one. The function is pure; test it that way.
+    expect(() => tokenPepper({})).toThrow(/TOKEN_PEPPER is required/);
   });
 });

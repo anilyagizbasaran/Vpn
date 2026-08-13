@@ -3,7 +3,8 @@ import { logger } from '../utils/logger.js';
 
 type Migration = { version: number; name: string; up: string };
 
-const MIGRATIONS: Migration[] = [
+/** Exported so tests can build a database at an older version on purpose. */
+export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     name: 'initial schema',
@@ -192,22 +193,185 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 5,
+    name: 'add invites alongside accounts',
+    up: `
+      -- Accounts are the wrong shape for a self-hosted VPN: registering,
+      -- signing in and rotating refresh tokens is a lot of machinery to decide
+      -- something the operator already knows — whether this person is allowed
+      -- on. An invite says that and nothing more.
+      --
+      -- Added alongside rather than instead of. Both owners work for now, so
+      -- the clients can move over one at a time and every step in between is a
+      -- state the tests still pass in. Accounts come out in a later migration,
+      -- once nothing enrols through them.
+      --
+      -- What does not change: an invite is an enrolment credential, not a key.
+      -- The client still generates its own pair and still sends only the
+      -- public half, so a stolen server disk decrypts nothing.
+      CREATE TABLE invites (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        label        TEXT    NOT NULL,
+        -- HMAC, for the same reason refresh tokens are stored hashed: a leaked
+        -- database must not hand anyone a working credential.
+        token_hash   TEXT    NOT NULL UNIQUE,
+        device_limit INTEGER NOT NULL DEFAULT 5,
+        created_at   TEXT    NOT NULL,
+        last_used_at TEXT,
+        revoked_at   TEXT
+      );
+
+      -- SQLite cannot relax a NOT NULL in place, so the table is rebuilt. Both
+      -- owner columns are nullable and a CHECK keeps a device from having
+      -- neither — the transitional shape, not the destination.
+      CREATE TABLE devices_v5 (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id        INTEGER REFERENCES users(id)   ON DELETE CASCADE,
+        invite_id      INTEGER REFERENCES invites(id) ON DELETE CASCADE,
+        label          TEXT    NOT NULL,
+        platform       TEXT    NOT NULL DEFAULT 'unknown',
+        public_key     TEXT    NOT NULL,
+        -- Issued at enrolment so a device can fetch its config, rotate its key
+        -- and revoke itself without holding the invite. Null for devices that
+        -- came from an account and authenticate with a JWT instead.
+        token_hash     TEXT    UNIQUE,
+        created_at     TEXT    NOT NULL,
+        key_rotated_at TEXT,
+        revoked_at     TEXT,
+        CHECK (user_id IS NOT NULL OR invite_id IS NOT NULL)
+      );
+
+      INSERT INTO devices_v5 (id, user_id, invite_id, label, platform,
+                              public_key, token_hash, created_at,
+                              key_rotated_at, revoked_at)
+        SELECT id, user_id, NULL, label, platform,
+               public_key, NULL, created_at, key_rotated_at, revoked_at
+          FROM devices;
+
+      DROP TABLE devices;
+      ALTER TABLE devices_v5 RENAME TO devices;
+
+      CREATE UNIQUE INDEX devices_active_pubkey
+        ON devices (public_key) WHERE revoked_at IS NULL;
+      CREATE INDEX devices_by_user   ON devices (user_id, revoked_at);
+      CREATE INDEX devices_by_invite ON devices (invite_id, revoked_at);
+    `,
+  },
+  {
+    version: 6,
+    name: 'remove accounts',
+    up: `
+      -- The other half of v5. Nothing enrols through an account any more: the
+      -- routes are gone, the clients are gone, and a device is named by its own
+      -- token rather than by whoever owns it.
+      --
+      -- This deletes data, and it is worth being plain about which. A device
+      -- left over from the account era has invite_id NULL and token_hash NULL:
+      -- no credential it could ever authenticate with, since the login that
+      -- used to speak for it no longer exists. Keeping such rows would mean a
+      -- device nobody can use holding an address nobody can reclaim, so they go
+      -- — and with them, by cascade, their peer allocations and usage rows.
+      -- The addresses return to the pool. Anyone affected enrols again with an
+      -- invite code, which is one screen and no worse than a re-install.
+      --
+      -- Spelled out in three statements rather than leaning on ON DELETE
+      -- CASCADE, because migrations run with foreign keys disabled (see the
+      -- migrate function below) and the cascade would not fire. Left implicit,
+      -- this deletes the devices and strands their peers holding addresses
+      -- nothing can reclaim.
+      DELETE FROM peer_usage WHERE peer_id IN (
+        SELECT p.id FROM peers p
+          JOIN devices d ON d.id = p.device_id
+         WHERE d.invite_id IS NULL
+      );
+      DELETE FROM peers WHERE device_id IN (
+        SELECT id FROM devices WHERE invite_id IS NULL
+      );
+      DELETE FROM devices WHERE invite_id IS NULL;
+
+      -- Rebuilt rather than altered: what changes is a NOT NULL and a dropped
+      -- CHECK, neither of which SQLite can do in place.
+      CREATE TABLE devices_v6 (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        invite_id      INTEGER NOT NULL REFERENCES invites(id) ON DELETE CASCADE,
+        label          TEXT    NOT NULL,
+        platform       TEXT    NOT NULL DEFAULT 'unknown',
+        public_key     TEXT    NOT NULL,
+        -- Now mandatory. A device that cannot authenticate as itself is not a
+        -- state the schema should be able to represent.
+        token_hash     TEXT    NOT NULL UNIQUE,
+        created_at     TEXT    NOT NULL,
+        key_rotated_at TEXT,
+        revoked_at     TEXT
+      );
+
+      INSERT INTO devices_v6 (id, invite_id, label, platform, public_key,
+                              token_hash, created_at, key_rotated_at, revoked_at)
+        SELECT id, invite_id, label, platform, public_key,
+               token_hash, created_at, key_rotated_at, revoked_at
+          FROM devices;
+
+      DROP TABLE devices;
+      ALTER TABLE devices_v6 RENAME TO devices;
+
+      CREATE UNIQUE INDEX devices_active_pubkey
+        ON devices (public_key) WHERE revoked_at IS NULL;
+      CREATE INDEX devices_by_invite ON devices (invite_id, revoked_at);
+
+      -- Nothing references these any more. refresh_tokens goes first: it is
+      -- the table that made accounts expensive, and every row in it is a
+      -- credential for a login route that no longer exists.
+      DROP TABLE refresh_tokens;
+      DROP TABLE users;
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
   const current = db.pragma('user_version', { simple: true }) as number;
+  const pending = MIGRATIONS.filter((migration) => migration.version > current);
+  if (pending.length === 0) return;
 
-  for (const migration of MIGRATIONS) {
-    if (migration.version <= current) continue;
+  // Foreign keys go off for the duration, which is SQLite's documented
+  // procedure for rebuilding a table (https://sqlite.org/lang_altertable.html).
+  //
+  // This is not a nicety. Several migrations rebuild `devices` by copying rows
+  // into a new table and dropping the old one — and `peers.device_id` cascades
+  // on delete, so with enforcement on, `DROP TABLE devices` deletes every
+  // address allocation in the database, including those of the devices the
+  // migration just carefully preserved. The devices survive with no peers, the
+  // agent hands out nothing for them, and every client sits on "connecting"
+  // forever with nothing anywhere saying why.
+  //
+  // The pragma is a no-op inside a transaction, so it has to be set out here.
+  const enforced = db.pragma('foreign_keys', { simple: true }) === 1;
+  if (enforced) db.pragma('foreign_keys = OFF');
 
-    db.transaction(() => {
-      db.exec(migration.up);
-      // PRAGMA does not accept bound parameters; version is an integer literal
-      // from this file, never user input.
-      db.pragma(`user_version = ${migration.version}`);
-    })();
+  try {
+    for (const migration of pending) {
+      db.transaction(() => {
+        db.exec(migration.up);
+        // PRAGMA does not accept bound parameters; version is an integer literal
+        // from this file, never user input.
+        db.pragma(`user_version = ${migration.version}`);
+      })();
 
-    logger.info('migration applied', { version: migration.version, name: migration.name });
+      logger.info('migration applied', { version: migration.version, name: migration.name });
+    }
+  } finally {
+    if (enforced) db.pragma('foreign_keys = ON');
+  }
+
+  // Turning enforcement off means a migration *could* leave a dangling
+  // reference behind. Better to refuse to start than to serve peers pointing at
+  // devices that are gone.
+  const violations = db.pragma('foreign_key_check') as unknown[];
+  if (violations.length > 0) {
+    throw new Error(
+      `Migration left ${violations.length} foreign key violation(s): ` +
+        JSON.stringify(violations.slice(0, 5)),
+    );
   }
 }
 

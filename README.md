@@ -1,24 +1,27 @@
 # WireGuard VPN — control plane, clients, and daemon
 
-A self-hosted WireGuard VPN service: an API that manages accounts and devices, a
-Flutter app for every platform, a privileged desktop daemon, a browser
-extension, and the agent that puts peers onto the interface.
+A self-hosted WireGuard VPN service: an API that hands out invite codes and
+devices, a Flutter app for every platform, a privileged desktop daemon, a
+browser extension, and the agent that puts peers onto the interface.
+
+There are no accounts. You run the server, it gives you a code, you type the
+code and the address into the app. That is the whole setup.
 
 The design goal is that **compromising any one component is not enough**.
 
 | Component | Knows | Cannot |
 |---|---|---|
-| Control plane (`server/`) | Emails, password hashes, **public keys** | Touch WireGuard. Holds no private keys and no privileges |
-| Node agent (`vpn-node-agent`) | How to edit the interface | Read accounts, tokens, or users |
-| Client (`apps/client`) | Account identity, **the private key** | Touch the network interface (on desktop) |
+| Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Touch WireGuard. Holds no private keys and no privileges |
+| Node agent (`vpn-node-agent`) | How to edit the interface | Read a token, or learn another node's peers |
+| Client (`apps/client`) | Its device token, **the private key** | Touch the network interface (on desktop) |
 | Desktop daemon (`vpnd`) | How to bring a local tunnel up | Reach the API — it never makes an outbound call |
 | Extension (`extension/`) | Whether the tunnel is up | See or produce a config |
 
 The private key is generated on the device and never leaves it. The server
 stores only the public key, so a full disk compromise of the control plane
 decrypts nothing. The cost is stated plainly: **lose the device, lose the key** —
-there is no copy to restore, and the app handles it by revoking the device and
-registering a new one.
+there is no copy to restore, and the app handles it by enrolling again with an
+invite code.
 
 ## Install
 
@@ -29,15 +32,27 @@ curl -fsSL https://raw.githubusercontent.com/anilyagizbasaran/Vpn/main/install.s
 ```
 
 It installs WireGuard, the control plane, a certificate and the node agent,
-then prints one address. Paste that into the app and you have a VPN.
+then prints an address and an invite code. Paste both into the app and you have
+a VPN.
 
 **No domain needed.** The installer derives a hostname from the machine's own
 address through [sslip.io](https://sslip.io), which is enough for Let's Encrypt
 to issue a certificate. Pass `--domain vpn.example.com` to use your own instead.
 
 Then download the app from
-[Releases](https://github.com/anilyagizbasaran/Vpn/releases), enter that
-address, and create an account — the first one is yours.
+[Releases](https://github.com/anilyagizbasaran/Vpn/releases) and enter the
+address and the code. Nothing else: no email, no password, no account to
+recover.
+
+More codes, one per person or per household:
+
+```bash
+cd /opt/vpn && docker compose exec api node scripts/invite.mjs --label "Ali"
+docker compose exec api node scripts/invite.mjs --list
+docker compose exec api node scripts/invite.mjs --revoke 3
+```
+
+Revoking a code cuts off every device enrolled with it, within one agent poll.
 
 ## How it works
 
@@ -97,17 +112,16 @@ packages/          Shared Dart layers (90 tests)
   vpn_client/          L3  controllers, storage, rotation policy
 apps/
   client/          L4  Flutter app — Android, iOS, Windows, macOS, Linux
-  dashboard/       L4  Flutter web — account and device management
 extension/         Companion browser extension (MV3)
 website/           Download page
 docs/              ARCHITECTURE.md · GO-LIVE.md · TUNING.md
 ```
 
 Dependencies run one way: a layer may only import from the layers above it in
-that list, and nothing in `packages/` may import from `apps/`. Two boundaries
-are enforced rather than documented — CI compiles `apps/dashboard` for the web
-on every push, which fails the moment anyone adds Flutter or `dart:io` to a
-layer that must not have either.
+that list, and nothing in `packages/` may import from `apps/`. That boundary is
+enforced rather than documented — CI compiles `vpn_api` to JavaScript on every
+push, which fails the moment anyone adds Flutter or `dart:io` to a layer that
+must not have either.
 
 ## Quick start
 
@@ -116,15 +130,15 @@ it.
 
 ```bash
 cd server
-cp .env.example .env      # then: npm run keygen, paste the three secrets
+cp .env.example .env      # then: npm run keygen, paste the two secrets
 npm install
-npm test                  # 127 tests
+npm test                  # 128 tests
 npm run dev               # http://localhost:3000
 ```
 
 With `WG_SKIP_BOOTSTRAP_NODE=true` and no node defined, `/ready` answers 503 and
-device registration returns 422 — that is correct, not a failure. Add a node
-with `npm run node:add`.
+enrolment returns 422 — that is correct, not a failure. Add a node with
+`npm run node:add`, then mint a code with `npm run invite -- --label me`.
 
 Flutter side — one `pub get` at the workspace root resolves everything:
 
@@ -186,16 +200,19 @@ the class of problem that works on a laptop and fails silently on a server.
 | Script | Runs on | Catches |
 |---|---|---|
 | `server/scripts/verify-deploy.sh` | VPS (root) | Forwarding off, missing NAT rule, API running as root, placeholder secrets in `.env`, buffer and conntrack settings |
-| `server/scripts/acceptance.mjs` | Anywhere | End-to-end API: rotation, refresh-token reuse detection, cross-account isolation, quota. With `--check-wg`, the "API says the peer exists but the interface disagrees" case |
+| `server/scripts/acceptance.mjs` | Anywhere | End-to-end API: enrolment, key rotation, token confusion between invites and devices, quota. With `--check-wg`, the "API says the peer exists but the interface disagrees" case |
 | `server/scripts/verify-tunnel.sh` | Client, while connected | **IPv6 leaks**, where DNS actually goes, MTU (ping works, HTTPS hangs) |
 | `vpnd/scripts/verify-daemon.{sh,ps1}` | Desktop | Whether the socket listens on TCP, ACLs, protocol mismatch, and whether a `PostUp` payload is really rejected |
 
 ```bash
-cd server && npm run acceptance -- https://api.example.com --check-wg
+cd server
+npm run invite -- --label acceptance --devices 4     # a throwaway code
+npm run acceptance -- https://api.example.com vpninv_... --check-wg
+npm run invite -- --revoke <id>
 ```
 
-The acceptance script creates and deletes its own accounts, so it is safe
-against production. The daemon script genuinely submits a hostile config
+Every device the acceptance run enrols removes itself at the end, and revoking
+the code cuts off anything it missed, so it is safe against production. The daemon script genuinely submits a hostile config
 containing `PostUp` and then checks whether the file it names was written — if
 it had been, that would be code execution as root.
 
@@ -211,7 +228,7 @@ Stated explicitly, including where the edges are:
   the interface in the same transaction — but if you keep abuse logs, **record
   timestamps**, because "who was 10.8.0.5" has more than one answer over time.
 - **Concurrent allocation** is resolved by a partial unique index in the
-  database, not by application logic. Two simultaneous `POST /devices` may
+  database, not by application logic. Two simultaneous `POST /enroll` may
   compute the same address; the loser retries up to six times.
 - **The control plane holds no privileges.** Clients generate keys, presharing
   uses 32 random bytes, and agents apply peers. No `sudo`, no `CAP_NET_ADMIN`,
@@ -224,26 +241,22 @@ Stated explicitly, including where the edges are:
   There is no separate recovery path after a reboot — it is the same path.
 - **A failed sync leaves the peer table alone.** Turning a control-plane outage
   into a total outage is the wrong direction.
-- **Every request re-checks the account**, not just the JWT signature. Otherwise
-  a deleted or suspended account's access token would keep working for another
-  15 minutes. The cost is one primary-key read per request against in-process
-  SQLite. If the database ever moves out of process, add a short-TTL cache —
-  do not remove the check.
-- **Account deletion is irreversible and requires the password**, because a
-  stolen access token alone should not be able to destroy an account. It revokes
-  devices first, then deletes the user row; cascades take peers and refresh
-  tokens. A wrong password returns **403, not 401** — a 401 looks like an expired
-  token to the client and would turn a typo into a forced sign-out.
-- **Passwords** use `node:crypto` scrypt (N=2^15). bcrypt and argon2 need a
-  native build, and `better-sqlite3` is already one native dependency too many.
-  Minimum 10 characters, no composition rules.
-- **Refresh tokens are not JWTs** — 48 opaque random bytes, stored only as an
-  HMAC, so they are revocable and a database leak does not yield usable tokens.
-  Access tokens are JWTs (HS256, 15 minutes).
-- **Reuse detection:** presenting a consumed refresh token revokes the entire
-  family descending from that login.
-- **No user enumeration.** An unknown email still performs a real scrypt hash so
-  response times match, and another account's device returns 404, not 403.
+- **There are no accounts, and that removes a whole class of bug.** No password
+  to reset, no email to enumerate, no session to expire, no refresh token to
+  rotate and no reuse detection to get subtly wrong. An invite says one thing —
+  this person may enrol devices — and revoking it says the opposite.
+- **Invite and device tokens are 32 random bytes, stored only as an HMAC.** A
+  database leak yields no usable credential, and the token is shown once.
+- **The two token kinds are hashed with different domain separators**
+  (`invite:`, `device:`, `node:`), so a token of one kind can never be presented
+  as another. Without that, a device token would be an invite — a stolen phone
+  could enrol more devices.
+- **A device token is a lookup, not a claim.** It names exactly one device, and
+  no route takes a device id, so there is no ownership check to get wrong: the
+  only device a token can reach is its own. That is why the client never
+  retries a 401 — nothing about it can go stale, so a 401 means revoked.
+- **Revoking an invite revokes its devices** by cascade, within one agent poll.
+  One code per person makes cutting someone off a single command.
 - **The agent validates config before it reaches argv.** The control plane is
   trusted over TLS, but not trusted enough to inject arguments into a command
   running as root on every node.
@@ -257,13 +270,12 @@ Stated explicitly, including where the edges are:
 |---|---|---|
 | `/health`, `/ready` (per IP) | 1 min | 120 |
 | Global (per IP) | 15 min | 300 |
-| `/auth/register`, `/auth/login`, `DELETE /auth/account` (per IP) | 15 min | 10 |
-| `/auth/refresh`, `/auth/logout` (per IP) | 15 min | 60 |
-| `POST`/`DELETE /devices` (**per user**) | 1 hour | 30 |
+| `POST /enroll`, `POST /device/rotate`, `DELETE /device` (per IP) | 1 hour | 30 |
 | `POST /node/sync` (per node) | 1 min | 120 |
 
-Device writes are limited per user rather than per IP so that users behind
-carrier NAT do not starve each other. Probes are mounted **before** the global
+Guessing an invite code is not feasible — 32 random bytes — but an unlimited
+enrolment endpoint is an unlimited device-creation endpoint for anyone holding
+one valid code. Probes are mounted **before** the global
 limiter and on a separate budget: an uptime monitor pinging every five seconds
 would otherwise consume 180 of the 300 requests in the window and hand real
 users a 429. `express.json()` runs **after** the limiter, so a request destined
@@ -273,14 +285,13 @@ for a 429 never gets to parse 32 KB of JSON first.
 
 | Part | State | Verified by |
 |---|---|---|
-| Control plane | Done | 127 tests; **28/28 acceptance checks against the live server** |
+| Control plane | Done | 128 tests; acceptance suite green against a live server |
 | Dart layers | Done | 90 tests, `dart analyze` clean |
 | Mobile app | Done | `flutter build apk --release` — 58 MB |
 | Desktop daemon | Done | **Real tunnel, end to end**; Windows service start is broken (below) |
 | Desktop GUI | Code done | Build unverified — needs the Visual Studio C++ workload |
 | Browser extension | Done | Native host verified against a real daemon; toggles a live tunnel |
-| Web dashboard | Done | Sign in, register and device list against the live API |
-| Docker | Done | Site, dashboard and API from one origin; `compose up` healthy |
+| Docker | Done | Site and API from one origin; `compose up` healthy |
 | Website | Code done | The download grid stays empty until a release is published |
 | CI | Done | Five jobs green, including a start-and-health-check of the API image |
 

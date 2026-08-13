@@ -3,8 +3,6 @@ import { env } from './config/env.js';
 import { createContainer } from './container.js';
 import { logger } from './utils/logger.js';
 
-const ONE_HOUR = 60 * 60 * 1000;
-
 async function main(): Promise<void> {
   const container = await createContainer();
 
@@ -16,23 +14,12 @@ async function main(): Promise<void> {
     logger.info('control plane listening', { port: env.PORT, env: env.NODE_ENV });
   });
 
-  const cleanup = setInterval(() => {
-    void container.auth
-      .purgeStaleTokens()
-      .then((deleted) => {
-        if (deleted > 0) logger.info('stale refresh tokens purged', { deleted });
-      })
-      .catch((error: unknown) => {
-        logger.warn('refresh token purge failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }, ONE_HOUR);
-  cleanup.unref();
+  // Nothing to sweep any more: refresh tokens were the only rows that expired
+  // on their own, and invites and device tokens are revoked deliberately or
+  // not at all.
 
   const shutdown = (signal: string) => {
     logger.info('shutting down', { signal });
-    clearInterval(cleanup);
     server.close(() => {
       container.close();
       process.exit(0);

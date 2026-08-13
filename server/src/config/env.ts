@@ -35,15 +35,17 @@ const envSchema = z.object({
 
   DATABASE_PATH: z.string().min(1).default('./data/vpn.db'),
 
-  JWT_ACCESS_SECRET: z.string().min(16),
-  JWT_ACCESS_TTL: z.string().min(1).default('15m'),
-  JWT_REFRESH_PEPPER: z.string().min(16),
-  REFRESH_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
-  JWT_ISSUER: z.string().min(1).default('vpn-control-plane'),
-  /** Revoked refresh tokens are kept this long for reuse-detection forensics. */
-  REFRESH_REVOKED_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
-
-  MAX_DEVICES_PER_USER: z.coerce.number().int().min(1).max(100).default(5),
+  /**
+   * HMAC key for every credential the server stores hashed: invite codes,
+   * device tokens, node agent tokens. Losing it invalidates all of them at
+   * once, which is a mass logout rather than a breach.
+   *
+   * `JWT_REFRESH_PEPPER` is the name it had when there were accounts. Still
+   * accepted, because renaming it in a deployed .env would silently rehash
+   * every credential and cut every device off with no message that says why.
+   */
+  TOKEN_PEPPER: z.string().min(16).optional(),
+  JWT_REFRESH_PEPPER: z.string().min(16).optional(),
   WG_ENABLE_PRESHARED_KEY: boolean(false),
   PSK_ENCRYPTION_KEY: z.string().default(''),
 
@@ -77,6 +79,25 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/**
+ * The HMAC key, under whichever name the deployment happens to use.
+ *
+ * Reading it through one function rather than at every call site is what keeps
+ * the two names from drifting apart — a service that read only the new one
+ * would hash differently from a service that read only the old one, and the
+ * symptom would be "some credentials stopped working".
+ */
+export function tokenPepper(source: Pick<Env, 'TOKEN_PEPPER' | 'JWT_REFRESH_PEPPER'>): string {
+  const pepper = source.TOKEN_PEPPER ?? source.JWT_REFRESH_PEPPER;
+  if (!pepper) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - TOKEN_PEPPER is required (generate one with `npm run keygen`)',
+    );
+  }
+  return pepper;
+}
+
 function parseEnv(source: NodeJS.ProcessEnv): Env {
   const parsed = envSchema.safeParse(source);
   if (!parsed.success) {
@@ -101,11 +122,8 @@ function parseEnv(source: NodeJS.ProcessEnv): Env {
     );
   }
   if (env.NODE_ENV === 'production') {
-    if (env.JWT_ACCESS_SECRET.includes('CHANGE_ME')) {
-      problems.push('JWT_ACCESS_SECRET still holds the placeholder value');
-    }
-    if (env.JWT_REFRESH_PEPPER.includes('CHANGE_ME')) {
-      problems.push('JWT_REFRESH_PEPPER still holds the placeholder value');
+    if (tokenPepper(env).includes('CHANGE_ME')) {
+      problems.push('TOKEN_PEPPER still holds the placeholder value');
     }
     if (env.TRUST_PROXY === 0) {
       // Not fatal: the API can legitimately be exposed directly. But behind

@@ -6,11 +6,8 @@ process.env['NODE_ENV'] = 'test';
 process.env['DATABASE_PATH'] = ':memory:';
 process.env['LOG_LEVEL'] = 'error';
 
-process.env['JWT_ACCESS_SECRET'] = 'test-access-secret-not-used-in-production';
-process.env['JWT_REFRESH_PEPPER'] = 'test-refresh-pepper-not-used-in-production';
-process.env['JWT_ACCESS_TTL'] = '15m';
+process.env['TOKEN_PEPPER'] = 'test-token-pepper-not-used-in-production';
 
-process.env['MAX_DEVICES_PER_USER'] = '2';
 process.env['WG_ENABLE_PRESHARED_KEY'] = 'true';
 process.env['PSK_ENCRYPTION_KEY'] = 'a'.repeat(64);
 process.env['NODE_POLL_SECONDS'] = '10';

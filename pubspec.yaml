@@ -19,4 +19,3 @@ workspace:
   - packages/vpn_tunnel_desktop  # L2  Windows/macOS/Linux, via the vpnd daemon
   - packages/vpn_client          # L3  controllers, storage, policy
   - apps/client                  # L4  the shipped application
-  - apps/dashboard               # L4  browser account management

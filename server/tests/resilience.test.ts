@@ -8,7 +8,7 @@ import {
   clientKeypair,
   createHarness,
   nodeSync,
-  registerUser,
+  enrolDevice,
   type TestNode,
 } from './helpers.js';
 
@@ -48,17 +48,12 @@ describe('node sync', () => {
       addressPoolCidr: '10.9.0.0/24',
       serverAddress: '10.9.0.1',
     });
-    const account = await registerUser(app, 'sync@example.com');
-    const keys = clientKeypair();
-    await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ publicKey: keys.publicKey });
+    const device = await enrolDevice(app, container);
 
     const fraSync = await nodeSync(app, fra);
     expect(fraSync.status).toBe(200);
     expect(fraSync.body.peers).toHaveLength(1);
-    expect(fraSync.body.peers[0].publicKey).toBe(keys.publicKey);
+    expect(fraSync.body.peers[0].publicKey).toBe(device.publicKey);
     expect(fraSync.body.peers[0].allowedIps).toEqual(['10.8.0.2/32']);
     expect(fraSync.body.server.interfaceName).toBe('wg0');
     expect(fraSync.body.pollAfterSeconds).toBe(10);
@@ -69,26 +64,18 @@ describe('node sync', () => {
   });
 
   it('includes the preshared key so the node can install it', async () => {
-    const account = await registerUser(app, 'psk@example.com');
-    await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ publicKey: clientKeypair().publicKey });
+    await enrolDevice(app, container);
 
     const sync = await nodeSync(app, fra);
     expect(sync.body.peers[0].presharedKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
   });
 
   it('stops listing a revoked device immediately', async () => {
-    const account = await registerUser(app, 'revoked@example.com');
-    const created = await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ publicKey: clientKeypair().publicKey });
+    const device = await enrolDevice(app, container);
 
     expect((await nodeSync(app, fra)).body.peers).toHaveLength(1);
 
-    await request(app).delete(`/devices/${created.body.device.id}`).set(auth(account.accessToken));
+    await request(app).delete('/device').set(auth(device.deviceToken)).expect(204);
 
     // The agent removes what is no longer in the answer, so the propagation
     // delay is one poll interval and no more.
@@ -102,11 +89,7 @@ describe('node sync', () => {
       addressPoolCidr: '10.9.0.0/24',
       serverAddress: '10.9.0.1',
     });
-    const account = await registerUser(app, 'iso@example.com');
-    await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ publicKey: clientKeypair().publicKey });
+    await enrolDevice(app, container);
 
     // A node token is scoped to its own server row; a compromised node learns
     // nothing about the rest of the fleet's addressing.
@@ -125,19 +108,15 @@ describe('node sync', () => {
   });
 
   it('folds usage into per-device totals', async () => {
-    const account = await registerUser(app, 'usage@example.com');
-    const keys = clientKeypair();
-    const created = await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ publicKey: keys.publicKey });
+    const device = await enrolDevice(app, container);
 
-    await nodeSync(app, fra, [{ publicKey: keys.publicKey, rxBytes: 500, txBytes: 700 }]);
-    await nodeSync(app, fra, [{ publicKey: keys.publicKey, rxBytes: 900, txBytes: 1_100 }]);
+    await nodeSync(app, fra, [{ publicKey: device.publicKey, rxBytes: 500, txBytes: 700 }]);
+    await nodeSync(app, fra, [{ publicKey: device.publicKey, rxBytes: 900, txBytes: 1_100 }]);
 
-    const list = await request(app).get('/devices').set(auth(account.accessToken));
-    expect(list.body.devices[0].usage).toEqual({ rxBytes: 900, txBytes: 1_100 });
-    expect(created.body.device.usage).toEqual({ rxBytes: 0, txBytes: 0 });
+    // Counters are absolute readings, not deltas: the second report replaces
+    // the first rather than adding to it.
+    const me = await request(app).get('/device').set(auth(device.deviceToken)).expect(200);
+    expect(me.body.device.usage).toEqual({ rxBytes: 900, txBytes: 1_100 });
   });
 
   it('rejects a malformed report without touching the totals', async () => {
@@ -172,16 +151,18 @@ describe('node sync', () => {
 
 describe('concurrent device creation', () => {
   it('never hands two devices the same address', async () => {
-    const tokens = await Promise.all(
-      Array.from({ length: 8 }, (_, i) => registerUser(app, `race${i}@example.com`)),
-    );
+    const { token: invite } = await container.invites.mint({
+      label: 'race',
+      deviceLimit: 8,
+    });
 
+    // Eight enrolments at once against one pool. The partial unique index is
+    // the arbiter, not application logic, and the loser of a race retries.
     const responses = await Promise.all(
-      tokens.map((account) =>
+      Array.from({ length: 8 }, () =>
         request(app)
-          .post('/devices')
-          .set(auth(account.accessToken))
-          .send({ publicKey: clientKeypair().publicKey }),
+          .post('/enroll')
+          .send({ inviteToken: invite, publicKey: clientKeypair().publicKey }),
       ),
     );
 
@@ -199,24 +180,27 @@ describe('concurrent device creation', () => {
   });
 
   it('keeps the pool consistent when creates and deletes interleave', async () => {
-    const account = await registerUser(app, 'churn@example.com');
+    const { token: invite } = await container.invites.mint({
+      label: 'churn',
+      deviceLimit: 5,
+    });
 
     for (let round = 0; round < 4; round += 1) {
       const created = await Promise.all([
         request(app)
-          .post('/devices')
-          .set(auth(account.accessToken))
-          .send({ publicKey: clientKeypair().publicKey }),
+          .post('/enroll')
+          .send({ inviteToken: invite, publicKey: clientKeypair().publicKey }),
         request(app)
-          .post('/devices')
-          .set(auth(account.accessToken))
-          .send({ publicKey: clientKeypair().publicKey }),
+          .post('/enroll')
+          .send({ inviteToken: invite, publicKey: clientKeypair().publicKey }),
       ]);
       expect(created.every((r) => r.status === 201)).toBe(true);
 
+      // Each device removes itself with its own token — there is no other way
+      // to name it, which is the point.
       await Promise.all(
         created.map((r) =>
-          request(app).delete(`/devices/${r.body.device.id}`).set(auth(account.accessToken)),
+          request(app).delete('/device').set(auth(r.body.deviceToken as string)),
         ),
       );
     }
@@ -235,20 +219,20 @@ describe('address pool exhaustion', () => {
       serverAddress: '10.9.0.1',
     });
 
-    const first = await registerUser(tiny, 'p1@example.com');
-    const second = await registerUser(tiny, 'p2@example.com');
+    const { token: invite } = await tinyContainer.invites.mint({
+      label: 'tiny',
+      deviceLimit: 5,
+    });
 
     const ok = await request(tiny)
-      .post('/devices')
-      .set(auth(first.accessToken))
-      .send({ publicKey: clientKeypair().publicKey });
+      .post('/enroll')
+      .send({ inviteToken: invite, publicKey: clientKeypair().publicKey });
     expect(ok.status).toBe(201);
     expect(ok.body.device.locations[0].allowedIp).toBe('10.9.0.2/32');
 
     const full = await request(tiny)
-      .post('/devices')
-      .set(auth(second.accessToken))
-      .send({ publicKey: clientKeypair().publicKey });
+      .post('/enroll')
+      .send({ inviteToken: invite, publicKey: clientKeypair().publicKey });
     expect(full.status).toBe(409);
     expect(full.body.error.message).toMatch(/no free addresses/i);
 
@@ -256,13 +240,15 @@ describe('address pool exhaustion', () => {
   });
 
   it('refuses to register a device when no node is allocatable', async () => {
-    const { app: bare } = await createHarness();
-    const account = await registerUser(bare, 'nonodes@example.com');
+    const { app: bare, container: bareContainer } = await createHarness();
+    const { token: invite } = await bareContainer.invites.mint({
+      label: 'bare',
+      deviceLimit: 5,
+    });
 
     const res = await request(bare)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ publicKey: clientKeypair().publicKey });
+      .post('/enroll')
+      .send({ inviteToken: invite, publicKey: clientKeypair().publicKey });
 
     // Better than a device with no addresses that silently never connects.
     expect(res.status).toBe(422);
@@ -272,9 +258,9 @@ describe('address pool exhaustion', () => {
 describe('hostile and malformed input', () => {
   it('rejects malformed JSON with a 400, not a stack trace', async () => {
     const res = await request(app)
-      .post('/auth/login')
+      .post('/enroll')
       .set('content-type', 'application/json')
-      .send('{"email": "a@b.co", ');
+      .send('{"inviteToken": "x", ');
 
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).not.toContain('at ');
@@ -282,31 +268,30 @@ describe('hostile and malformed input', () => {
 
   it('rejects an oversized body with 413', async () => {
     const res = await request(app)
-      .post('/auth/register')
-      .send({ email: 'big@example.com', password: 'x'.repeat(64 * 1024) });
+      .post('/enroll')
+      .send({ inviteToken: 'x', label: 'x'.repeat(64 * 1024) });
 
     expect(res.status).toBe(413);
     expect(res.body.error.code).toBe('payload_too_large');
   });
 
   it('does not let a device label escape into the rendered config', async () => {
-    const account = await registerUser(app, 'inject@example.com');
+    const device = await enrolDevice(app, container);
 
     const res = await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
-      .send({ label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey });
+      .post('/enroll')
+      .send({ inviteToken: device.inviteToken, label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey });
 
     expect(res.status).toBe(400);
   });
 
   it('ignores client-supplied fields it does not own', async () => {
-    const account = await registerUser(app, 'extra@example.com');
+    const { token: invite } = await container.invites.mint({ label: 'x', deviceLimit: 5 });
 
     const res = await request(app)
-      .post('/devices')
-      .set(auth(account.accessToken))
+      .post('/enroll')
       .send({
+        inviteToken: invite,
         label: 'Phone',
         publicKey: clientKeypair().publicKey,
         allowedIp: '10.8.0.99/32',
@@ -319,8 +304,24 @@ describe('hostile and malformed input', () => {
     expect(res.body.device.locations[0].serverId).toBe(fra.id);
   });
 
-  it('rejects a refresh token used as an access token', async () => {
-    const account = await registerUser(app, 'swap@example.com');
-    expect((await request(app).get('/devices').set(auth(account.refreshToken))).status).toBe(401);
+  it('refuses an invite code presented as a device token', async () => {
+    const device = await enrolDevice(app, container);
+    // Both are opaque strings the same client holds, so nothing but the
+    // domain separator in the hash keeps one from being spent as the other.
+    // An invite that authenticated as a device would be a device that could
+    // enrol more devices.
+    expect(
+      (await request(app).get('/device').set(auth(device.inviteToken))).status,
+    ).toBe(401);
+  });
+
+  it('refuses a device token presented as an invite code', async () => {
+    const device = await enrolDevice(app, container);
+
+    const res = await request(app)
+      .post('/enroll')
+      .send({ inviteToken: device.deviceToken, publicKey: clientKeypair().publicKey });
+
+    expect(res.status).toBe(401);
   });
 });

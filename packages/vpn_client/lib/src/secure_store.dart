@@ -3,11 +3,12 @@ import 'package:vpn_api/vpn_api.dart';
 
 import 'device_store.dart';
 
-/// Everything sensitive the app holds: JWTs and the WireGuard private key.
+/// Everything sensitive the app holds: the device credential and the WireGuard
+/// private key.
 ///
 /// Implements both storage contracts, but they stay separate interfaces so the
-/// API layer physically cannot reach the device key — clearing a session must
-/// never be able to destroy an identity the server cannot reissue.
+/// API layer physically cannot reach the device key — clearing the credential
+/// must never be able to destroy an identity the server cannot reissue.
 class SecureStore implements SessionStore, DeviceStore {
   SecureStore({FlutterSecureStorage? storage})
     : _storage =
@@ -21,51 +22,40 @@ class SecureStore implements SessionStore, DeviceStore {
 
   final FlutterSecureStorage _storage;
 
-  static const _accessToken = 'auth.access_token';
-  static const _refreshToken = 'auth.refresh_token';
-  static const _email = 'auth.email';
+  /// Written by the account-based versions of this app. Never read any more,
+  /// only deleted: an upgrade must not leave a signed-in session's tokens
+  /// sitting in the keychain forever.
+  static const _legacyAccountKeys = [
+    'auth.access_token',
+    'auth.refresh_token',
+    'auth.email',
+  ];
+
   static const _peerId = 'peer.id';
   static const _peerPrivateKey = 'peer.private_key';
   static const _peerPublicKey = 'peer.public_key';
   static const _peerKeyCreatedAt = 'peer.key_created_at';
   static const _selectedServer = 'peer.selected_server';
   static const _serverUrl = 'server.base_url';
+  static const _deviceToken = 'device.token';
 
   // --- SessionStore ---------------------------------------------------------
 
+  /// The credential an enrolled device authenticates with. It does not expire,
+  /// so there is no refresh counterpart — a 401 means the device was revoked.
   @override
-  Future<String?> readAccessToken() => _storage.read(key: _accessToken);
+  Future<String?> readDeviceToken() => _storage.read(key: _deviceToken);
 
   @override
-  Future<String?> readRefreshToken() => _storage.read(key: _refreshToken);
-
-  Future<String?> readEmail() => _storage.read(key: _email);
-
-  @override
-  Future<void> saveSession({
-    required String accessToken,
-    required String refreshToken,
-    required String email,
-  }) async {
-    await _storage.write(key: _accessToken, value: accessToken);
-    await _storage.write(key: _refreshToken, value: refreshToken);
-    await _storage.write(key: _email, value: email);
-  }
-
-  @override
-  Future<void> saveTokens({
-    required String accessToken,
-    required String refreshToken,
-  }) async {
-    await _storage.write(key: _accessToken, value: accessToken);
-    await _storage.write(key: _refreshToken, value: refreshToken);
-  }
+  Future<void> saveDeviceToken(String token) =>
+      _storage.write(key: _deviceToken, value: token);
 
   @override
   Future<void> clearSession() async {
-    await _storage.delete(key: _accessToken);
-    await _storage.delete(key: _refreshToken);
-    await _storage.delete(key: _email);
+    await _storage.delete(key: _deviceToken);
+    for (final key in _legacyAccountKeys) {
+      await _storage.delete(key: key);
+    }
   }
 
   // --- DeviceStore ----------------------------------------------------------

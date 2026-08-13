@@ -56,14 +56,8 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
 
-  # Caddy carries the static site and the dashboard inside its own image rather
-  # than mounting them: the dashboard is a Flutter build, so something has to
-  # compile it, and baking it in means the running stack has no build step and
-  # no host directory it depends on.
-  # Building this one needs the Flutter workspace — pubspec, packages/, apps/ —
-  # which a server has no other use for, and a Flutter web build on a small VPS
-  # is a 2 GB download away from running out of memory. So it is built in CI
-  # and pulled here.
+  # Caddy carries the static site inside its own image rather than mounting it,
+  # so the running stack has no build step and no host directory it depends on.
   caddy:
     build:
       context: .

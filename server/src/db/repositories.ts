@@ -1,10 +1,9 @@
 import type {
   Device,
+  Invite,
   Peer,
   PeerUsage,
-  RefreshTokenRecord,
   ServerStatus,
-  User,
   VpnServer,
 } from './types.js';
 
@@ -19,14 +18,15 @@ import type {
  * and races are caught by UNIQUE constraints (see `UniqueConstraintError`).
  */
 
-export interface UserRepository {
-  create(input: { email: string; passwordHash: string }): Promise<User>;
-  findByEmail(email: string): Promise<User | null>;
-  findById(id: number): Promise<User | null>;
-  /**
-   * Hard delete for erasure requests. Devices, peers and refresh tokens go
-   * with it via ON DELETE CASCADE. Returns false if the row was already gone.
-   */
+export interface InviteRepository {
+  create(input: { label: string; tokenHash: string; deviceLimit: number }): Promise<Invite>;
+  findById(id: number): Promise<Invite | null>;
+  /** The lookup enrolment does, so it is indexed and exact. */
+  findByTokenHash(tokenHash: string): Promise<Invite | null>;
+  list(): Promise<Invite[]>;
+  touch(id: number, usedAt: string): Promise<void>;
+  /** Revoking takes the devices enrolled with it, via ON DELETE CASCADE. */
+  revoke(id: number, revokedAt: string): Promise<boolean>;
   delete(id: number): Promise<boolean>;
 }
 
@@ -66,19 +66,26 @@ export interface ServerRepository {
   }): Promise<void>;
 }
 
+/**
+ * Exactly one owner. Accounts are on the way out; an enrolled device carries an
+ * invite and its own token, an account device carries neither.
+ */
 export interface CreateDeviceInput {
-  userId: number;
+  inviteId: number;
   label: string;
   platform: string;
   publicKey: string;
+  tokenHash: string;
 }
 
 export interface DeviceRepository {
   /** Throws `UniqueConstraintError` if the public key is already registered. */
   create(input: CreateDeviceInput): Promise<Device>;
   findById(id: number): Promise<Device | null>;
-  listActiveByUser(userId: number): Promise<Device[]>;
-  countActiveByUser(userId: number): Promise<number>;
+  /** How an enrolled device authenticates every call after enrolment. */
+  findByTokenHash(tokenHash: string): Promise<Device | null>;
+  listActiveByInvite(inviteId: number): Promise<Device[]>;
+  countActiveByInvite(inviteId: number): Promise<number>;
   revoke(id: number, revokedAt: string): Promise<boolean>;
   /** Swaps in a new keypair, keeping the device identity and its addresses. */
   rotateKey(id: number, publicKey: string, rotatedAt: string): Promise<Device>;
@@ -131,31 +138,10 @@ export interface UsageRepository {
   totalsForDevice(deviceId: number): Promise<{ rxBytes: number; txBytes: number }>;
 }
 
-export interface RefreshTokenRepository {
-  create(input: {
-    userId: number;
-    tokenHash: string;
-    familyId: string;
-    expiresAt: string;
-  }): Promise<RefreshTokenRecord>;
-  findByHash(tokenHash: string): Promise<RefreshTokenRecord | null>;
-  revoke(id: number, revokedAt: string): Promise<void>;
-  /** Token reuse detected — kill every descendant of that login. */
-  revokeFamily(familyId: string, revokedAt: string): Promise<void>;
-  revokeAllForUser(userId: number, revokedAt: string): Promise<void>;
-  /**
-   * Housekeeping. Revoked tokens are kept for a while after revocation so a
-   * replay still trips reuse detection instead of silently 404-ing, then they
-   * are dropped too — otherwise the table only ever grows.
-   */
-  deleteStale(input: { expiredBefore: string; revokedBefore: string }): Promise<number>;
-}
-
 export interface Repositories {
-  users: UserRepository;
+  invites: InviteRepository;
   servers: ServerRepository;
   devices: DeviceRepository;
   peers: PeerRepository;
   usage: UsageRepository;
-  refreshTokens: RefreshTokenRepository;
 }

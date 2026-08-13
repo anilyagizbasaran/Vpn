@@ -1,9 +1,8 @@
-import { env } from './config/env.js';
+import { env, tokenPepper } from './config/env.js';
 import type { Repositories } from './db/repositories.js';
 import { openDatabase, type Db } from './db/sqlite.js';
 import { createSqliteRepositories } from './db/sqliteRepositories.js';
-import { AccountService } from './services/accountService.js';
-import { AuthService } from './services/authService.js';
+import { InviteService } from './services/inviteService.js';
 import { DeviceService } from './services/deviceService.js';
 import { NodeService } from './services/nodeService.js';
 import { logger } from './utils/logger.js';
@@ -11,8 +10,7 @@ import { logger } from './utils/logger.js';
 export interface Container {
   db: Db;
   repos: Repositories;
-  auth: AuthService;
-  account: AccountService;
+  invites: InviteService;
   devices: DeviceService;
   nodes: NodeService;
   close(): void;
@@ -28,17 +26,10 @@ export async function createContainer(options: ContainerOptions = {}): Promise<C
   const db = openDatabase(options.databasePath ?? env.DATABASE_PATH);
   const repos = createSqliteRepositories(db);
 
-  const auth = new AuthService(repos, {
-    accessSecret: env.JWT_ACCESS_SECRET,
-    accessTtl: env.JWT_ACCESS_TTL,
-    refreshPepper: env.JWT_REFRESH_PEPPER,
-    refreshTtlDays: env.REFRESH_TTL_DAYS,
-    issuer: env.JWT_ISSUER,
-    revokedRetentionDays: env.REFRESH_REVOKED_RETENTION_DAYS,
-  });
+
+  const pepper = tokenPepper(env);
 
   const devices = new DeviceService(repos, {
-    maxDevicesPerUser: env.MAX_DEVICES_PER_USER,
     enablePresharedKey: env.WG_ENABLE_PRESHARED_KEY,
     pskEncryptionKey: env.PSK_ENCRYPTION_KEY,
     clientAllowedIps: env.WG_CLIENT_ALLOWED_IPS,
@@ -47,18 +38,18 @@ export async function createContainer(options: ContainerOptions = {}): Promise<C
   });
 
   const nodes = new NodeService(repos, {
-    tokenPepper: env.JWT_REFRESH_PEPPER,
+    tokenPepper: pepper,
     pskEncryptionKey: env.PSK_ENCRYPTION_KEY,
     pollSeconds: env.NODE_POLL_SECONDS,
   });
 
-  const account = new AccountService(repos, auth, devices);
+  const invites = new InviteService(repos, { tokenPepper: pepper });
 
   if (!(options.skipBootstrapNode ?? env.WG_SKIP_BOOTSTRAP_NODE)) {
     await defineBootstrapNode(repos);
   }
 
-  return { db, repos, auth, account, devices, nodes, close: () => db.close() };
+  return { db, repos, invites, devices, nodes, close: () => db.close() };
 }
 
 /**

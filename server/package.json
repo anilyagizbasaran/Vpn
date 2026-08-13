@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "acceptance": "node scripts/acceptance.mjs",
     "node:add": "npm run build --silent && node scripts/add-node.mjs",
-    "keygen": "node --input-type=module -e \"import{randomBytes}from'node:crypto';console.log('JWT_ACCESS_SECRET='+randomBytes(48).toString('base64url'));console.log('JWT_REFRESH_PEPPER='+randomBytes(48).toString('base64url'));console.log('PSK_ENCRYPTION_KEY='+randomBytes(32).toString('hex'))\""
+    "keygen": "node --input-type=module -e \"import{randomBytes}from'node:crypto';console.log('TOKEN_PEPPER='+randomBytes(48).toString('base64url'));console.log('PSK_ENCRYPTION_KEY='+randomBytes(32).toString('hex'))\"",
+    "invite": "npm run build --silent && node scripts/invite.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
@@ -24,14 +25,12 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.0.1",
     "helmet": "^8.1.0",
-    "jsonwebtoken": "^9.0.2",
     "zod": "^4.0.14"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
-    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.1.0",
     "@types/supertest": "^6.0.3",
     "supertest": "^7.1.4",

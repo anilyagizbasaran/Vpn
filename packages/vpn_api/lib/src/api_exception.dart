@@ -27,14 +27,11 @@ class ApiException implements Exception {
     code: 'timeout',
   );
 
+  /// The server no longer recognises this device. There is nothing to refresh,
+  /// so the only answer is to enrol again with a fresh invite code.
   bool get isSessionExpired => statusCode == 401 || code == 'unauthorized';
 
   bool get isQuotaExceeded => code == 'peer_quota_exceeded';
-
-  /// A step-up check failed (wrong password on a sensitive action). Distinct
-  /// from [isSessionExpired] on purpose: the server answers 403 here so the
-  /// client does not mistake a typo for a dead token and sign the user out.
-  bool get isInvalidPassword => code == 'invalid_password';
 
   @override
   String toString() => 'ApiException($code): $message';

@@ -25,16 +25,22 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _confirmForgetDevice() async {
-    final vpn = context.read<VpnController>();
+  /// Removes this device from the server and forgets it here.
+  ///
+  /// What used to be "delete your account" — there is no account to delete,
+  /// and no password to confirm with. Removing the device is the whole of it:
+  /// the invite stays valid, so the same person can set the device up again.
+  Future<void> _confirmRemoveDevice() async {
+    final enrol = context.read<EnrollController>();
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Remove this device?'),
         content: const Text(
-          'This revokes the device on the server and deletes its key from this '
-          'phone. Reconnecting registers a new device and uses one of your '
-          'device slots.',
+          'This device stops being able to connect, and its key is deleted '
+          'from this phone. Your invite code still works, so you can set it '
+          'up again.',
         ),
         actions: [
           TextButton(
@@ -49,66 +55,11 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
 
-    if (confirmed ?? false) await vpn.forgetDevice();
-  }
-
-  Future<void> _confirmDeleteAccount() async {
-    final auth = context.read<AuthController>();
-    final controller = TextEditingController();
-
-    final password = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Delete your account?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'This permanently deletes your account, all of your devices and '
-              'their VPN keys. It cannot be undone.\n\n'
-              'Enter your password to confirm.',
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              obscureText: true,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Password',
-                border: OutlineInputBorder(),
-              ),
-              onSubmitted: (value) => Navigator.pop(dialogContext, value),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('Delete forever'),
-          ),
-        ],
-      ),
-    );
-
-    controller.dispose();
-    if (password == null || password.isEmpty) return;
-
-    // On success the auth gate swaps this screen out for the login screen;
-    // on failure `auth.error` renders on the login screen's banner.
-    await auth.deleteAccount(password: password);
+    if (confirmed ?? false) await enrol.removeDevice();
   }
 
   @override
   Widget build(BuildContext context) {
-    final auth = context.watch<AuthController>();
     final vpn = context.watch<VpnController>();
     final theme = Theme.of(context);
 
@@ -125,9 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 );
               }
-              if (value == 'forget') _confirmForgetDevice();
-              if (value == 'logout') auth.logout();
-              if (value == 'delete') _confirmDeleteAccount();
+              if (value == 'remove') _confirmRemoveDevice();
             },
             itemBuilder: (_) => [
               // Only Android exposes a system always-on VPN screen to send the
@@ -141,32 +90,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     contentPadding: EdgeInsets.zero,
                   ),
                 ),
-              const PopupMenuItem(
-                value: 'forget',
-                child: ListTile(
-                  leading: Icon(Icons.phonelink_erase_outlined),
-                  title: Text('Remove this device'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'logout',
-                child: ListTile(
-                  leading: Icon(Icons.logout),
-                  title: Text('Sign out'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
+              // One destructive item where there were two. Signing out and
+              // deleting the account were different things only because an
+              // account existed; without one, both end at the same place.
               const PopupMenuDivider(),
               PopupMenuItem(
-                value: 'delete',
+                value: 'remove',
                 child: ListTile(
                   leading: Icon(
-                    Icons.delete_forever_outlined,
+                    Icons.delete_outline,
                     color: theme.colorScheme.error,
                   ),
                   title: Text(
-                    'Delete account',
+                    'Remove this device',
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                   contentPadding: EdgeInsets.zero,
@@ -219,7 +155,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
 
               _DetailsCard(
-                email: auth.user?.email ?? '',
+                serverAddress: context.watch<VpnServerAddress>().current,
                 deviceLabel: vpn.device?.label,
                 region: vpn.selectedServer?.displayName,
                 address: vpn.device?.locations.isEmpty ?? true ? null : vpn.device!.locations.first.allowedIp,
@@ -300,13 +236,13 @@ class _ConnectButton extends StatelessWidget {
 
 class _DetailsCard extends StatelessWidget {
   const _DetailsCard({
-    required this.email,
+    required this.serverAddress,
     required this.deviceLabel,
     required this.region,
     required this.address,
   });
 
-  final String email;
+  final String serverAddress;
   final String? deviceLabel;
   final String? region;
   final String? address;
@@ -319,7 +255,7 @@ class _DetailsCard extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Column(
           children: [
-            _row(context, Icons.person_outline, 'Account', email),
+            _row(context, Icons.dns_outlined, 'Server', serverAddress),
             _row(
               context,
               Icons.smartphone,

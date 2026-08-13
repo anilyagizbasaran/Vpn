@@ -9,10 +9,10 @@ Compromising any one component should not be enough.
 
 | Component | Knows | Does not know |
 |---|---|---|
-| Control plane (`server/`) | Emails, password hashes, **public keys** | Private keys. It never touches WireGuard |
-| Node agent (`vpn-node-agent`) | How to change the interface | Accounts, tokens, users |
-| Client (`apps/client`) | Account identity, **the private key** | It cannot touch the network interface (on desktop) |
-| Desktop service (`vpnd`) | How to bring a local tunnel up | The account — it never calls the API |
+| Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Private keys. It never touches WireGuard |
+| Node agent (`vpn-node-agent`) | How to change the interface | Any token, or another node's peers |
+| Client (`apps/client`) | Its device token, **the private key** | It cannot touch the network interface (on desktop) |
+| Desktop service (`vpnd`) | How to bring a local tunnel up | The device token — it never calls the API |
 | Extension (`extension/`) | Whether the tunnel is up | It cannot see or produce a config |
 
 What follows from that:
@@ -21,9 +21,9 @@ What follows from that:
   keys are not there.
 - If the control plane is taken, no command runs on any node; it never dials
   out.
-- If a node is taken, accounts are safe; the node token only sees that node's
+- If a node is taken, other nodes are safe; the node token only sees that node's
   own peer set.
-- If `vpnd` is taken you do not get the account; if the GUI is taken you do not
+- If `vpnd` is taken you do not get the device token; if the GUI is taken you do not
   get root.
 
 The cost is plain: **lose the private key and the device cannot be recovered.**
@@ -53,9 +53,9 @@ One rule: **an upper layer knows the layer below; the lower one never knows the
 upper.**
 
 ```
-L4  apps/client   apps/dashboard   extension/       ← none of these know each other
+L4  apps/client        extension/                  ← neither knows the other
     ────────────────────────────────────────────
-L3  vpn_client    session · device identity · rotation · region selection
+L3  vpn_client    enrolment · device identity · rotation · region selection
 L2  vpn_tunnel    the tunnel contract (pure Dart)
       ├─ vpn_tunnel_mobile    wireguard_flutter_plus
       └─ vpn_tunnel_desktop   vpnd IPC client
@@ -66,10 +66,11 @@ L0  vpn_crypto    X25519              (one dependency: package:cryptography)
 Three boundaries were drawn deliberately:
 
 1. **`SessionStore` / `DeviceStore`** — so `vpn_api` stays free of Flutter and
-   `dart:io`. The payoff is concrete: `apps/dashboard` compiles the same API
-   client for the web, and CI runs that build on every push to keep the
-   boundary honest. It also puts the device private key architecturally out of
-   reach of the API layer.
+   `dart:io`. CI compiles `vpn_api` to JavaScript on every push to keep the
+   boundary honest, since neither survives dart2js. It also puts the device
+   private key architecturally out of reach of the API layer: `SessionStore`
+   holds the device token and nothing else, so clearing a credential cannot
+   destroy an identity the server cannot reissue.
 2. **`TunnelStage`** — our own vocabulary instead of the plugin's enum.
    Replacing the plugin with a daemon client on desktop touched **one package**.
 3. **`ApiClient` catches transport errors without `dart:io`** — required so it
@@ -79,12 +80,18 @@ Three boundaries were drawn deliberately:
 ## Data model
 
 ```
-users
+invites            label · token_hash · device_limit · revoked_at
  └─ devices        one keypair · what the quota counts · what the user sees
       └─ peers     the address allocation binding a device to a server
            └─ peer_usage
 servers (nodes)    agent_token_hash · status · last_seen_at · reported_public_key
 ```
+
+**Why an invite and not an account:** registering, signing in and rotating
+refresh tokens is a lot of machinery to decide something the operator already
+knows — whether this person is allowed on. An invite says that and nothing
+more. It removed the `users` and `refresh_tokens` tables, password hashing,
+session expiry and reuse detection, and with them every bug those can have.
 
 **Why `devices` and `peers` are separate:** originally the peer *was* the
 device. That breaks on the second server — a device needs an address on every
@@ -103,24 +110,31 @@ trip. It is Mullvad's model.
 ## End to end
 
 ```
-1. REGISTER    POST /auth/register → access (JWT, 15 min) + refresh (opaque, 30 days)
-
-2. DEVICE      The client generates an X25519 pair; the private key goes to
-               secure storage
-               POST /devices {publicKey, platform}
+1. ENROL       The client generates an X25519 pair; the private key goes to
+               secure storage and never leaves it
+               POST /enroll {inviteToken, publicKey, platform}
                Control plane: quota → an address from every active node's pool → DB
-               ← a .conf, but with PrivateKey = <PRIVATE_KEY>
+               ← a .conf with PrivateKey = <PRIVATE_KEY>, plus a device token
 
-3. PROPAGATION The agent pulls the peer set with POST /node/sync (≤10s)
+               One call. There is no registration step before it and no sign-in
+               after it — the device token is the whole session, and it does
+               not expire.
+
+2. PROPAGATION The agent pulls the peer set with POST /node/sync (≤10s)
                and applies it in a single `wg set`
 
-4. TUNNEL      The client substitutes its own key for the placeholder
+3. TUNNEL      The client substitutes its own key for the placeholder
                mobile:   straight to VpnService / NetworkExtension
                desktop:  handed to vpnd over an AF_UNIX socket
 
-5. ROTATION    If the key is older than 7 days, POST /devices/:id/rotate
+4. ROTATION    If the key is older than 7 days, POST /device/rotate
                The device id, its label and **all its addresses** stay the same
 ```
+
+No route carries a device id. `GET /device`, `/device/config`, `/device/rotate`
+and `DELETE /device` all mean *this* device, because a device token names
+exactly one and cannot name another. That is not a shortcut — it is why there
+is no ownership check to get wrong.
 
 ## Why these decisions
 

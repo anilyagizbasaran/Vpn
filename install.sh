@@ -182,12 +182,8 @@ PORT=3000
 TRUST_PROXY=1
 DATABASE_PATH=/data/vpn.db
 
-JWT_ACCESS_SECRET=$(gen 48 64)
-JWT_REFRESH_PEPPER=$(gen 48 64)
-JWT_ACCESS_TTL=15m
-REFRESH_TTL_DAYS=30
+TOKEN_PEPPER=$(gen 48 64)
 
-MAX_DEVICES_PER_USER=5
 NODE_POLL_SECONDS=10
 
 WG_INTERFACE=wg0
@@ -290,6 +286,21 @@ for _ in $(seq 1 30); do
 done
 [ "${AGENT_OK:-0}" = "1" ] && ok "agent syncing" || info "the agent has not reported yet; it keeps retrying"
 
+# --- first invite -------------------------------------------------------------
+
+step "Creating your first invite code"
+info "this is what the app asks for; there is no account to make"
+
+# Same trick as the node token: the structured logger shares stdout, so the
+# code is picked out by its prefix rather than by trusting the whole stream.
+INVITE="$(docker compose exec -T api node scripts/invite.mjs   --label "first" --devices 5 --token-only 2>/dev/null |
+  grep -oE 'vpninv_[A-Za-z0-9_-]+' | head -1)"
+
+case "$INVITE" in
+  vpninv_*) ok "invite created" ;;
+  *) INVITE=""; info "could not create one automatically; run 'npm run invite' yourself" ;;
+esac
+
 # --- done --------------------------------------------------------------------
 
 cat <<EOF
@@ -300,11 +311,18 @@ ${BOLD}Your VPN server is running.${RESET}
 
       ${BOLD}https://$DOMAIN${RESET}
 
-  Then create an account in the app — the first one is yours.
+  ...and this invite code:
 
-  Manage devices in a browser:  https://$DOMAIN/dashboard/
-  Installed at:                 $INSTALL_DIR
-  Update later:                 curl -fsSL $REPO_URL/raw/main/install.sh | sudo bash
+      ${BOLD}${INVITE:-run: docker compose exec api node scripts/invite.mjs --label me}${RESET}
+
+  That is the whole setup. The code is good for 5 devices; the app generates
+  its own key and the private half never reaches this server.
+
+  More codes, or to cut someone off:
+      cd $INSTALL_DIR && docker compose exec api node scripts/invite.mjs --list
+
+  Installed at:   $INSTALL_DIR
+  Update later:   curl -fsSL $REPO_URL/raw/main/install.sh | sudo bash
 
   Make sure your provider's firewall allows ${BOLD}$WG_PORT/udp${RESET} as well as 80 and 443.
 

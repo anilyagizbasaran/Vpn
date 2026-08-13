@@ -9,7 +9,7 @@ environment:
   flutter: ">=3.41.0"
 
 # Layer 3. Knows about the API and the tunnel contract, and nothing about the
-# UI or about any specific platform: no dart:io here, so the web dashboard can
+# UI or about any specific platform: no dart:io here, so a browser build can
 # reuse the auth half of it.
 dependencies:
   flutter:

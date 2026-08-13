@@ -7,27 +7,33 @@
  * binary, sudo or capabilities, the database file, the address pool. Those are
  * the things that are fine on a laptop and broken on a VPS.
  *
- * It creates its own accounts and deletes them at the end, so it is safe to
- * run against production — though it does consume peer addresses while it
- * runs.
+ * It needs an invite code, because that is now the only way in. Mint a
+ * throwaway one first — `npm run invite -- --label acceptance --devices 10`
+ * — and revoke it afterwards. Every device the run enrols removes itself at
+ * the end, so it is safe against production, though it does consume peer
+ * addresses while it runs.
  *
- *   node scripts/acceptance.mjs https://api.example.com
- *   node scripts/acceptance.mjs https://api.example.com --check-wg
+ *   node scripts/acceptance.mjs https://api.example.com vpninv_...
+ *   node scripts/acceptance.mjs https://api.example.com vpninv_... --check-wg
  *
  * --check-wg     also watch `wg show` locally, proving the node agent applies
  *                what the API hands out. Only valid on a machine that is both
  *                the control plane and a VPN node.
- * --rate-limits  exercise the auth rate limiter (locks this IP out for 15 min)
+ * --rate-limits  exercise the enrolment rate limiter (locks this IP out)
  */
 
 import { generateKeyPairSync } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const baseUrl = (process.argv[2] ?? '').replace(/\/+$/, '');
-const flags = new Set(process.argv.slice(3));
+const inviteToken = process.argv[3] ?? '';
+const flags = new Set(process.argv.slice(4));
 
-if (!baseUrl) {
-  console.error('usage: node scripts/acceptance.mjs <base-url> [--check-wg] [--rate-limits]');
+if (!baseUrl || !inviteToken.startsWith('vpninv_')) {
+  console.error(
+    'usage: node scripts/acceptance.mjs <base-url> <vpninv_...> [--check-wg] [--rate-limits]',
+  );
+  console.error('mint one with: npm run invite -- --label acceptance --devices 10');
   process.exit(2);
 }
 
@@ -150,26 +156,35 @@ async function waitForPeer(publicKey, { present, timeoutMs = 45_000 } = {}) {
   );
 }
 
-const stamp = Date.now();
-const password = `acceptance-${stamp}-password`;
-const accounts = [];
+/** Every device this run creates, so cleanup can remove all of them. */
+const enrolled = [];
 
-async function register(suffix) {
-  const email = `acceptance+${stamp}-${suffix}@example.invalid`;
-  const { body } = await call('POST', '/auth/register', {
-    body: { email, password },
-    expect: 201,
+/**
+ * Enrols one device the way an app does: generate the pair here, send only the
+ * public half, keep the token that comes back.
+ */
+async function enrol(label, { expect = 201 } = {}) {
+  const keys = clientKeypair();
+  const response = await call('POST', '/enroll', {
+    body: { inviteToken, label, publicKey: keys.publicKey, platform: 'linux' },
+    expect,
   });
-  const account = { email, ...body.tokens, userId: body.user.id };
-  accounts.push(account);
-  return account;
+  const device = {
+    ...keys,
+    token: response.body.deviceToken,
+    id: response.body.device.id,
+    locations: response.body.device.locations,
+    body: response.body,
+  };
+  enrolled.push(device);
+  return device;
 }
 
 // --- the tests -------------------------------------------------------------
 
 async function main() {
   console.log(c.bold(`\nAcceptance run against ${baseUrl}`));
-  console.log(c.dim(`test accounts are prefixed acceptance+${stamp} and deleted at the end`));
+  console.log(c.dim('every device this run enrols removes itself at the end'));
 
   let ready;
 
@@ -236,89 +251,70 @@ async function main() {
     assertEqual(body?.error?.code, 'not_found', 'error.code');
   });
 
-  group('Authentication');
-
-  const alice = await register('alice');
-
-  await check('registration returned a usable session', async () => {
-    assert(alice.accessToken && alice.refreshToken, 'tokens missing');
-    const { body } = await call('GET', '/auth/me', { token: alice.accessToken, expect: 200 });
-    assertEqual(body.user.email, alice.email, 'email');
-  });
-
-  await check('a wrong password is rejected', async () => {
-    await call('POST', '/auth/login', {
-      body: { email: alice.email, password: `${password}-wrong` },
-      expect: 401,
-    });
-  });
-
-  await check('refresh rotates the token', async () => {
-    const { body } = await call('POST', '/auth/refresh', {
-      body: { refreshToken: alice.refreshToken },
-      expect: 200,
-    });
-    assert(body.tokens.refreshToken !== alice.refreshToken, 'the refresh token was not rotated');
-    alice.previousRefreshToken = alice.refreshToken;
-    alice.accessToken = body.tokens.accessToken;
-    alice.refreshToken = body.tokens.refreshToken;
-  });
-
-  await check('replaying a consumed refresh token kills the session family', async () => {
-    // The leak signal. If this passes silently the whole rotation scheme is
-    // decorative.
-    await call('POST', '/auth/refresh', {
-      body: { refreshToken: alice.previousRefreshToken },
-      expect: 401,
-    });
-    await call('POST', '/auth/refresh', {
-      body: { refreshToken: alice.refreshToken },
-      expect: 401,
-    });
-
-    // Recover a working session for the rest of the run.
-    const { body } = await call('POST', '/auth/login', {
-      body: { email: alice.email, password },
-      expect: 200,
-    });
-    alice.accessToken = body.tokens.accessToken;
-    alice.refreshToken = body.tokens.refreshToken;
-  });
+  group('Enrolment');
 
   await check('an unauthenticated request is refused', async () => {
-    await call('GET', '/devices', { expect: 401 });
+    await call('GET', '/device', { expect: 401 });
+  });
+
+  await check('a wrong invite code is refused', async () => {
+    await call('POST', '/enroll', {
+      body: { inviteToken: 'vpninv_not-a-real-code', publicKey: clientKeypair().publicKey },
+      expect: 401,
+    });
+  });
+
+  const device = await enrol('Acceptance device');
+
+  await check('enrolment returned a device token and a config', async () => {
+    assert(device.token?.startsWith('vpndev_'), `deviceToken looks wrong: ${device.token}`);
+    assertEqual(device.body.device.publicKey, device.publicKey, 'publicKey');
+    assertEqual(device.body.device.platform, 'linux', 'platform');
+  });
+
+  await check('the device token authenticates as exactly that device', async () => {
+    const { body } = await call('GET', '/device', { token: device.token, expect: 200 });
+    assertEqual(body.device.id, device.id, 'device id');
+  });
+
+  await check('the invite cannot be spent as a device token', async () => {
+    // Both are opaque strings the same client holds. Only the domain separator
+    // in the hash keeps one from being presented as the other, and an invite
+    // that authenticated as a device would be a device that could enrol more.
+    await call('GET', '/device', { token: inviteToken, expect: 401 });
+  });
+
+  await check('a device token cannot be spent as an invite', async () => {
+    await call('POST', '/enroll', {
+      body: { inviteToken: device.token, publicKey: clientKeypair().publicKey },
+      expect: 401,
+    });
   });
 
   group('Devices');
 
-  const keys = clientKeypair();
-  let device;
-
-  await check('a device registers with a client-generated key', async () => {
-    const { body } = await call('POST', '/devices', {
-      token: alice.accessToken,
-      body: { label: 'Acceptance device', publicKey: keys.publicKey, platform: 'linux' },
-      expect: 201,
-    });
-    device = body.device;
-    assertEqual(body.device.publicKey, keys.publicKey, 'publicKey');
-    assertEqual(body.device.platform, 'linux', 'platform');
-  });
-
   await check('the server returned no private key', async () => {
     // The single most important property of the whole design.
-    const { body } = await call('GET', `/devices/${device.id}/config`, {
-      token: alice.accessToken,
+    const { body } = await call('GET', '/device/config', {
+      token: device.token,
       expect: 200,
     });
     assertEqual(body.privateKey, null, 'privateKey');
     assertEqual(body.privateKeyIncluded, false, 'privateKeyIncluded');
     assert(body.conf.includes('<PRIVATE_KEY>'), 'the config has no placeholder');
-    assert(!body.conf.includes(keys.privateKey), 'the config leaked the private key');
+    assert(!body.conf.includes(device.privateKey), 'the config leaked the private key');
+  });
+
+  await check('a config is never cached anywhere on the path', async () => {
+    const { headers } = await call('GET', '/device/config', { token: device.token });
+    assert(
+      (headers.get('cache-control') ?? '').includes('no-store'),
+      'no Cache-Control: no-store — a proxy may be keeping a copy of key material',
+    );
   });
 
   await check('the config is complete enough to hand to wg-quick', async () => {
-    const { body } = await call('GET', `/devices/${device.id}/config`, { token: alice.accessToken });
+    const { body } = await call('GET', '/device/config', { token: device.token });
     for (const key of ['[Interface]', 'Address =', '[Peer]', 'PublicKey =', 'AllowedIPs =', 'Endpoint =']) {
       assert(body.conf.includes(key), `the config is missing ${key}`);
     }
@@ -331,7 +327,7 @@ async function main() {
 
   if (flags.has('--check-wg')) {
     await check('the device reaches the interface', async () => {
-      // Not instant any more: the agent pulls it within one poll interval.
+      // Not instant: the agent pulls it within one poll interval.
       await waitForPeer(device.publicKey, { present: true });
     });
   } else {
@@ -339,22 +335,20 @@ async function main() {
   }
 
   await check('the address came from the configured pool', async () => {
-    // /ready answers with `nodes`, not `server` — the old field name survived
-    // the split of devices from peers and quietly failed this check.
     const location = device.locations[0];
     assert(
       /^\d+\.\d+\.\d+\.\d+\/32$/.test(location.allowedIp),
       `allowedIp looks wrong: ${location.allowedIp}`,
     );
-    // A location with no endpoint renders a config that can never hand shake,
+    // A location with no endpoint renders a config that can never handshake,
     // and nothing downstream would say why.
     assert(location.endpoint, `no endpoint reported for region ${location.region}`);
   });
 
   await check('rotating keeps the device identity and drops the old key', async () => {
     const rotated = clientKeypair();
-    const { body } = await call('POST', `/devices/${device.id}/rotate`, {
-      token: alice.accessToken,
+    const { body } = await call('POST', '/device/rotate', {
+      token: device.token,
       body: { publicKey: rotated.publicKey },
       expect: 200,
     });
@@ -371,55 +365,51 @@ async function main() {
     if (flags.has('--check-wg')) {
       await waitForPeer(rotated.publicKey, { present: true });
       // The whole point of rotation: a leaked config expires by itself.
-      await waitForPeer(keys.publicKey, { present: false });
+      await waitForPeer(device.publicKey, { present: false });
     }
     device.publicKey = rotated.publicKey;
   });
 
   await check('rotation did not consume a device slot', async () => {
-    const { body } = await call('GET', '/devices', { token: alice.accessToken, expect: 200 });
-    assertEqual(body.devices.length, 1, 'device count');
+    const { body } = await call('GET', '/device', { token: device.token, expect: 200 });
+    assertEqual(body.device.id, device.id, 'device id');
   });
 
   await check('a malformed public key is rejected', async () => {
-    await call('POST', '/devices', {
-      token: alice.accessToken,
-      body: { publicKey: 'not-a-key' },
+    await call('POST', '/enroll', {
+      body: { inviteToken, publicKey: 'not-a-key' },
       expect: 400,
     });
   });
 
   group('Isolation and limits');
 
-  const mallory = await register('mallory');
+  const second = await enrol('Acceptance second');
 
-  await check("another account cannot read Alice's config", async () => {
-    await call('GET', `/devices/${device.id}/config`, { token: mallory.accessToken, expect: 404 });
+  await check('a device token names one device and cannot name another', async () => {
+    // There is no id in any path, so this is structural rather than checked:
+    // the only device a token can reach is its own. That is the property.
+    const { body } = await call('GET', '/device', { token: second.token, expect: 200 });
+    assertEqual(body.device.id, second.id, 'device id');
+    assert(body.device.id !== device.id, 'the second token resolved to the first device');
   });
 
-  await check("another account cannot revoke Alice's device", async () => {
-    await call('DELETE', `/devices/${device.id}`, { token: mallory.accessToken, expect: 404 });
-  });
-
-  await check("another account cannot rotate Alice's key", async () => {
-    await call('POST', `/devices/${device.id}/rotate`, {
-      token: mallory.accessToken,
-      body: { publicKey: clientKeypair().publicKey },
-      expect: 404,
-    });
+  await check('one config never mentions the other device key', async () => {
+    const { body } = await call('GET', '/device/config', { token: second.token });
+    assert(!body.conf.includes(device.publicKey), 'the config carries another device key');
   });
 
   await check('the device limit is enforced', async () => {
-    let created = 1; // Alice already has one.
+    let created = enrolled.length;
     let limit = null;
 
     for (let i = 0; i < 20; i += 1) {
-      const response = await call('POST', '/devices', {
-        token: alice.accessToken,
-        body: { publicKey: clientKeypair().publicKey, deviceLabel: `filler-${i}` },
+      const response = await call('POST', '/enroll', {
+        body: { inviteToken, publicKey: clientKeypair().publicKey, label: `filler-${i}` },
       });
       if (response.status === 201) {
         created += 1;
+        enrolled.push({ token: response.body.deviceToken, id: response.body.device.id });
         continue;
       }
       assertEqual(response.status, 409, 'status once the limit is reached');
@@ -428,43 +418,40 @@ async function main() {
       break;
     }
 
-    assert(limit !== null, `the limit was never reached after ${created} devices — MAX_DEVICES_PER_USER may be unset`);
+    assert(
+      limit !== null,
+      `the limit was never reached after ${created} devices — mint the invite with a smaller --devices`,
+    );
     assertEqual(created, limit, 'devices created before the limit fired');
   });
 
-  await check('revoking frees a slot', async () => {
-    const { body: before } = await call('GET', '/devices', { token: alice.accessToken });
-    await call('DELETE', `/devices/${before.devices[0].id}`, {
-      token: alice.accessToken,
-      expect: 204,
-    });
+  await check('a device removing itself frees a slot', async () => {
+    const victim = enrolled.pop();
+    await call('DELETE', '/device', { token: victim.token, expect: 204 });
 
-    const { body: after } = await call('GET', '/devices', { token: alice.accessToken });
-    assertEqual(after.devices.length, before.devices.length - 1, 'device count after revoke');
+    // Its own token is dead the moment it is gone.
+    await call('GET', '/device', { token: victim.token, expect: 401 });
 
-    await call('POST', '/devices', {
-      token: alice.accessToken,
-      body: { publicKey: clientKeypair().publicKey },
-      expect: 201,
-    });
+    const replacement = await enrol('replacement');
+    assert(replacement.id !== victim.id, 'the replacement reused the removed id');
   });
 
   group('Input handling');
 
   await check('malformed JSON returns 400, not 500', async () => {
-    const response = await fetch(`${baseUrl}/auth/login`, {
+    const response = await fetch(`${baseUrl}/enroll`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: '{"email": "a@b.co", ',
+      body: '{"inviteToken": "x", ',
     });
     assertEqual(response.status, 400, 'status');
   });
 
   await check('an oversized body returns 413, not 500', async () => {
-    const response = await fetch(`${baseUrl}/auth/register`, {
+    const response = await fetch(`${baseUrl}/enroll`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'big@example.invalid', password: 'x'.repeat(200_000) }),
+      body: JSON.stringify({ inviteToken, label: 'x'.repeat(200_000) }),
     });
     assert(
       response.status === 413 || response.status === 400,
@@ -473,58 +460,46 @@ async function main() {
   });
 
   await check('a device label with control characters is rejected', async () => {
-    await call('POST', '/devices', {
-      token: alice.accessToken,
+    await call('POST', '/enroll', {
       // `label`, not `deviceLabel` — the wrong field name meant the server saw
       // no label at all, happily created the device, and this check passed
       // without ever exercising the thing it exists to prove.
-      body: { label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey },
+      body: { inviteToken, label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey },
       expect: 400,
     });
   });
 
   if (flags.has('--rate-limits')) {
     group('Rate limiting');
-    await check('repeated bad logins are throttled', async () => {
+    await check('repeated enrolment attempts are throttled', async () => {
       let throttled = false;
-      for (let i = 0; i < 15; i += 1) {
-        const response = await call('POST', '/auth/login', {
-          body: { email: `nobody-${i}@example.invalid`, password: 'wrong-password-here' },
+      for (let i = 0; i < 40; i += 1) {
+        const response = await call('POST', '/enroll', {
+          body: { inviteToken: 'vpninv_wrong', publicKey: clientKeypair().publicKey },
         });
         if (response.status === 429) {
           throttled = true;
           break;
         }
       }
-      assert(throttled, 'no 429 after 15 attempts — the limiter is off or TRUST_PROXY is wrong');
+      assert(throttled, 'no 429 after 40 attempts — the limiter is off or TRUST_PROXY is wrong');
     });
   } else {
-    skip('rate limiting', 'pass --rate-limits; it locks this IP out for 15 minutes');
+    skip('rate limiting', 'pass --rate-limits; it locks this IP out for a while');
   }
 
   group('Cleanup');
 
-  for (const account of accounts) {
-    await check(`account ${account.email.split('+')[1]} deletes itself`, async () => {
-      // Also the erasure path: peers and refresh tokens go with the user.
-      const login = await call('POST', '/auth/login', {
-        body: { email: account.email, password },
-        expect: 200,
-      });
-      await call('DELETE', '/auth/account', {
-        token: login.body.tokens.accessToken,
-        body: { password },
-        expect: 204,
-      });
-      await call('POST', '/auth/login', {
-        body: { email: account.email, password },
-        expect: 401,
-      });
-    });
-  }
+  await check('every device this run created removes itself', async () => {
+    for (const created of enrolled) {
+      await call('DELETE', '/device', { token: created.token, expect: 204 });
+    }
+    // Addresses go back to the pool; nothing is left holding one.
+    await call('GET', '/device', { token: device.token, expect: 401 });
+  });
 
   if (flags.has('--check-wg')) {
-    await check('the agent removed the deleted account from the interface', async () => {
+    await check('the agent removed them from the interface', async () => {
       await waitForPeer(device.publicKey, { present: false });
     });
   }
@@ -552,7 +527,7 @@ if (failures.length > 0) {
     console.log(`    ${failure.message}`);
   }
   console.log(
-    `\n${c.yellow('Test accounts may be left behind. They are prefixed')} acceptance+${stamp}`,
+    `\n${c.yellow('Devices may be left behind. Revoke the invite to cut them all off at once.')}`,
   );
 }
 

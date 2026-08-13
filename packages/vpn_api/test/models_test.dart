@@ -85,7 +85,9 @@ void main() {
     });
 
     test('substitutes the locally stored key', () {
-      final resolved = DeviceConfig.fromJson(json(_deviceJson)).resolveConf('LOCAL_KEY');
+      final resolved = DeviceConfig.fromJson(
+        json(_deviceJson),
+      ).resolveConf('LOCAL_KEY');
 
       expect(resolved, contains('PrivateKey = LOCAL_KEY'));
       expect(resolved, isNot(contains(DeviceConfig.privateKeyPlaceholder)));
@@ -93,7 +95,8 @@ void main() {
     });
 
     test('tolerates a server that omits optional fields', () {
-      final config = DeviceConfig.fromJson(json('''
+      final config = DeviceConfig.fromJson(
+        json('''
       {
         "device": {
           "id": 1,
@@ -102,7 +105,8 @@ void main() {
         },
         "conf": "[Interface]\\n"
       }
-      '''));
+      '''),
+      );
 
       expect(config.device.platform, 'unknown');
       expect(config.device.locations, isEmpty);
@@ -114,7 +118,8 @@ void main() {
 
   group('VpnServer', () {
     test('parses a region list entry', () {
-      final server = VpnServer.fromJson(json('''
+      final server = VpnServer.fromJson(
+        json('''
         {
           "id": 2,
           "region": "nl-ams",
@@ -123,7 +128,8 @@ void main() {
           "isDefault": false,
           "online": true
         }
-      '''));
+      '''),
+      );
 
       expect(server.id, 2);
       expect(server.displayName, 'Amsterdam');
@@ -138,25 +144,6 @@ void main() {
       // Unknown liveness is treated as offline: claiming a node is up when we
       // cannot tell would strand whoever picks it.
       expect(server.online, isFalse);
-    });
-  });
-
-  group('AuthSession', () {
-    test('parses user and tokens', () {
-      final session = AuthSession.fromJson(json('''
-        {
-          "user": {"id": 3, "email": "a@b.co"},
-          "tokens": {
-            "accessToken": "access",
-            "expiresIn": 900,
-            "refreshToken": "refresh"
-          }
-        }
-      '''));
-
-      expect(session.user.id, 3);
-      expect(session.tokens.accessToken, 'access');
-      expect(session.tokens.expiresIn, 900);
     });
   });
 }

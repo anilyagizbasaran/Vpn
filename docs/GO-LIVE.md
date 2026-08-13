@@ -137,17 +137,22 @@ means no token was ever minted.
 The whole chain is up, so now run it end to end:
 
 ```bash
-node scripts/acceptance.mjs https://vpn.example.com --check-wg
+npm run invite -- --label acceptance --devices 4     # a throwaway code
+node scripts/acceptance.mjs https://vpn.example.com vpninv_... --check-wg
+npm run invite -- --revoke <id>
 ```
 
-Run on the server *itself*, `--check-wg` creates a device and **waits for the
+It needs an invite code because that is now the only way in. Mint a throwaway
+one first and revoke it after.
+
+Run on the server *itself*, `--check-wg` enrols a device and **waits for the
 key to appear in `wg show`** — exercising the API, the database, the agent and
 `wg`. It is the one thing no mock can test. It also checks the inverse of
 rotation: that the old key **leaves** the interface.
 
-The script creates and deletes its own accounts, so it is safe against
-production. Add `--rate-limits` to exercise the limiter too — it **locks the IP
-you run it from out for 15 minutes**.
+Every device it enrols removes itself at the end, and revoking the code cuts
+off anything it missed, so it is safe against production. Add `--rate-limits`
+to exercise the limiter too — it **locks the IP you run it from out**.
 
 ## 4. The mobile client
 
@@ -218,23 +223,26 @@ the native host manifest, and Chrome has to be restarted afterwards.
 
 **Check:** the badge shows `ON` and Disconnect works from the popup.
 
-## 7. The dashboard and download page
+## 7. Invite codes
 
-Under Docker both are already inside the `caddy` image, served at `/` and
-`/dashboard/`. By hand:
+This is how anyone gets on. There is no registration page and no account.
 
 ```bash
-cd apps/dashboard && flutter build web --release --base-href /dashboard/
-# copy build/web to wherever Caddy serves from
+cd server
+npm run invite -- --label "Ali" --devices 5   # prints the code once
+npm run invite -- --list                      # label, devices used, last used
+npm run invite -- --revoke 3
 ```
 
-`--base-href` matters: Flutter writes `<base href="/">` otherwise, and a build
-served under `/dashboard/` then fetches its bootstrap from the wrong path and
-renders a blank page with nothing to explain it.
+Under Docker, prefix with `docker compose exec api node scripts/invite.mjs`.
 
-Leaving `API_BASE_URL` empty makes the dashboard same-origin — when Caddy
-serves the page and proxies `/auth` and `/devices`, nothing needs configuring
-and CORS never comes up.
+One code per person rather than one shared code: revoking then cuts off exactly
+that person's devices, within one agent poll, without touching anyone else. The
+code is displayed once and stored only as an HMAC, so a lost code is reissued
+rather than looked up.
+
+The download page is served at `/` from inside the `caddy` image; there is
+nothing to build for it.
 
 ---
 

@@ -7,26 +7,25 @@ import { env } from './config/env.js';
 import type { Repositories } from './db/repositories.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { globalLimiter, healthLimiter } from './middleware/rateLimiters.js';
-import { createRequireAuth } from './middleware/requireAuth.js';
-import { createAuthRouter } from './routes/auth.routes.js';
-import { createDevicesRouter, createServersRouter } from './routes/devices.routes.js';
+import { createRequireDevice } from './middleware/requireDevice.js';
+import { createDeviceRouter } from './routes/device.routes.js';
+import { createEnrollRouter } from './routes/enroll.routes.js';
+import { createServersRouter } from './routes/servers.routes.js';
 import { createHealthRouter } from './routes/health.routes.js';
 import { createNodeRouter } from './routes/node.routes.js';
-import type { AccountService } from './services/accountService.js';
-import type { AuthService } from './services/authService.js';
 import type { DeviceService } from './services/deviceService.js';
+import type { InviteService } from './services/inviteService.js';
 import type { NodeService } from './services/nodeService.js';
 import { logger } from './utils/logger.js';
 
 export interface AppDependencies {
   repos: Repositories;
-  auth: AuthService;
-  account: AccountService;
+  invites: InviteService;
   devices: DeviceService;
   nodes: NodeService;
 }
 
-export function createApp({ repos, auth, account, devices, nodes }: AppDependencies): Express {
+export function createApp({ repos, invites, devices, nodes }: AppDependencies): Express {
   const app = express();
 
   // Must match the real number of proxies, otherwise a client can forge
@@ -74,11 +73,13 @@ export function createApp({ repos, auth, account, devices, nodes }: AppDependenc
   // Configs are a few hundred bytes; nothing legitimate needs more than this.
   app.use(express.json({ limit: '32kb' }));
 
-  const requireAuth = createRequireAuth(auth);
 
-  app.use('/auth', createAuthRouter(auth, account, requireAuth));
-  app.use('/devices', createDevicesRouter(devices, requireAuth));
-  app.use('/servers', createServersRouter(devices, requireAuth));
+  // Enrolment, and the routes a device uses on itself and to list regions.
+  const requireDevice = createRequireDevice(invites);
+  app.use('/enroll', createEnrollRouter(devices, invites));
+  app.use('/device', createDeviceRouter(devices, requireDevice));
+  app.use('/servers', createServersRouter(devices, requireDevice));
+
 
   app.use(notFoundHandler);
   app.use(errorHandler);

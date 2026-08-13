@@ -6,12 +6,13 @@ class DeviceRepository {
 
   final ApiClient api;
 
+  /// This device. A list of one, because a device token authenticates exactly
+  /// one device and there is no way to name another.
   Future<List<Device>> list() async {
-    final json = await api.get('/devices');
-    final items = json['devices'] as List<dynamic>? ?? const [];
-    return items
-        .map((item) => Device.fromJson(item as Map<String, dynamic>))
-        .toList(growable: false);
+    final json = await api.get('/device');
+    final device = json['device'];
+    if (device == null) return const [];
+    return [Device.fromJson(device as Map<String, dynamic>)];
   }
 
   /// The regions this account can connect through.
@@ -26,40 +27,30 @@ class DeviceRepository {
   /// Registers a device. It receives an address on every server at once, so
   /// switching region later needs no further registration.
   ///
-  /// [publicKey] is the public half of a keypair generated on the device, so
-  /// the server never sees the private one. Omitting it makes the server
-  /// generate the pair and return the private key once — only useful for
-  /// clients that cannot do Curve25519.
-  Future<DeviceConfig> create({
-    required String label,
-    String? publicKey,
-    String? platform,
-  }) async {
-    // `?value` drops the entry entirely when null.
-    final json = await api.post('/devices', body: {
-      'label': label,
-      'publicKey': ?publicKey,
-      'platform': ?platform,
-    });
-    return DeviceConfig.fromJson(json);
-  }
+  // There is no create() any more. A device comes into existence exactly once,
+  // at enrolment, which is EnrollmentRepository's job — leaving a second way to
+  // register one would mean two paths that must agree about quotas, tokens and
+  // key ownership forever.
 
   /// Fetches the config for one region. Omitting [serverId] gives the default.
   Future<DeviceConfig> config(int deviceId, {int? serverId}) async {
     final query = serverId == null ? '' : '?serverId=$serverId';
-    final json = await api.get('/devices/$deviceId/config$query');
+    final json = await api.get('/device/config$query');
     return DeviceConfig.fromJson(json);
   }
 
   /// Replaces the device's key, keeping its identity and every address it
   /// holds. Nodes pick the change up on their next sync.
-  Future<DeviceConfig> rotateKey(int deviceId, {required String publicKey}) async {
+  Future<DeviceConfig> rotateKey(
+    int deviceId, {
+    required String publicKey,
+  }) async {
     final json = await api.post(
-      '/devices/$deviceId/rotate',
+      '/device/rotate',
       body: {'publicKey': publicKey},
     );
     return DeviceConfig.fromJson(json);
   }
 
-  Future<void> revoke(int deviceId) => api.delete('/devices/$deviceId');
+  Future<void> revoke(int deviceId) => api.delete('/device');
 }

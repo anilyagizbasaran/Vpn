@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vpn_api/vpn_api.dart';
@@ -15,30 +14,18 @@ late FakeSecureStorageChannel storage;
 late FakeTunnel tunnel;
 late SecureStore store;
 late ApiClient api;
-late AuthController auth;
+late EnrollController enrol;
 late VpnController vpn;
 
 const base = 'https://api.test';
-const privateKey = 'cHJpdmF0ZWtleXByaXZhdGVrZXlwcml2YXRla2V5cHJpdmE=';
+/// A real 32-byte key, not just something base64-shaped. The previous fixture
+/// decoded to 35 bytes, which every string comparison accepted and X25519 threw
+/// on the moment a test actually did arithmetic with it.
+const privateKey = 'cHJpdmF0ZWtleXByaXZhdGVrZXlwcml2YXRla2V5cHI=';
 
 /// Must match the key inside [peerBody], otherwise the controller decides the
 /// stored key is orphaned and re-keys.
-const publicKey = 'cHVibGlja2V5cHVibGlja2V5cHVibGlja2V5cHVibGljMQ==';
-
-Map<String, dynamic> sessionBody({
-  String access = 'access-1',
-  String refresh = 'refresh-1',
-  String email = 'a@b.co',
-}) => {
-  'user': {'id': 1, 'email': email, 'createdAt': '2026-01-01T00:00:00.000Z'},
-  'tokens': {
-    'tokenType': 'Bearer',
-    'accessToken': access,
-    'expiresIn': 900,
-    'refreshToken': refresh,
-    'refreshExpiresAt': '2026-02-01T00:00:00.000Z',
-  },
-};
+const publicKey = 'cHVibGlja2V5cHVibGlja2V5cHVibGlja2V5cHVibDE=';
 
 /// The region list /servers answers with.
 const serverList = [
@@ -109,14 +96,13 @@ void main() {
       devices: DeviceRepository(api: api),
       store: store,
       tunnel: tunnel,
-      deviceLabel: 'Android device',
     );
-    auth = AuthController(
-      repository: AuthRepository(api: api, store: store),
-      store: store,
-      api: api,
+    enrol = EnrollController(
+      repository: EnrollmentRepository(api: api, store: store),
+      session: store,
+      devices: store,
     );
-    auth.onSessionEnd = vpn.endSession;
+    enrol.onSessionEnd = vpn.endSession;
   });
 
   tearDown(() async {
@@ -124,299 +110,285 @@ void main() {
     await tunnel.dispose();
   });
 
-  Future<void> signIn() async {
-    http.enqueue('POST', '/auth/login', body: sessionBody());
-    await auth.login(email: 'a@b.co', password: 'a-long-enough-password');
-  }
+  /// Puts the app in the state it is in after a successful enrolment.
+  Future<void> enrolled() => store.saveDeviceToken('vpndev_live');
 
-  Future<void> saveDevice({DateTime? keyCreatedAt, String? pub}) => store
-      .saveDevice(
+  Future<void> saveDevice({DateTime? keyCreatedAt, String? pub}) =>
+      store.saveDevice(
         peerId: 7,
         privateKey: privateKey,
         publicKey: pub ?? publicKey,
         keyCreatedAt: keyCreatedAt,
       );
 
-  group('AuthController', () {
-    test('starts signed out when there is no stored token', () async {
-      await auth.bootstrap();
+  group('EnrollController', () {
+    test('starts unenrolled when there is no stored device token', () async {
+      await enrol.bootstrap();
 
-      expect(auth.status, AuthStatus.signedOut);
+      expect(enrol.status, EnrollStatus.notEnrolled);
+    });
+
+    test('trusts a stored token without asking the server', () async {
+      await enrolled();
+
+      await enrol.bootstrap();
+
+      // Deliberately not verified on launch: offline should open the app, not
+      // send someone back to a code they no longer have. A revoked device is
+      // discovered on the first real request.
+      expect(enrol.status, EnrollStatus.enrolled);
       expect(http.requests, isEmpty);
     });
 
-    test('verifies a stored token against the server before trusting it', () async {
-      await store.saveSession(
-        accessToken: 'access-1',
-        refreshToken: 'refresh-1',
-        email: 'a@b.co',
+    test(
+      'enrolment generates the keypair here and sends only the public half',
+      () async {
+        http.enqueue(
+          'POST',
+          '/enroll',
+          status: 201,
+          body: {...deviceBody(), 'deviceToken': 'vpndev_new'},
+        );
+
+        final ok = await enrol.enrol(
+          inviteToken: 'vpninv_code',
+          label: 'Android device',
+          platform: 'android',
+        );
+
+        expect(ok, isTrue);
+        expect(enrol.status, EnrollStatus.enrolled);
+
+        final sent = http.requests.single;
+        expect(sent.path, '/enroll');
+        expect(sent.body, contains('publicKey'));
+        expect(sent.body, isNot(contains('privateKey')));
+
+        // The private half is kept, and only here.
+        expect(await store.readPeerPrivateKey(), isNotNull);
+        expect(await store.readDeviceToken(), 'vpndev_new');
+      },
+    );
+
+    test(
+      'a rejected invite surfaces the server message and stays unenrolled',
+      () async {
+        http.enqueue(
+          'POST',
+          '/enroll',
+          status: 403,
+          body: {
+            'error': {
+              'code': 'forbidden',
+              'message': 'That invite code has been revoked.',
+            },
+          },
+        );
+
+        final ok = await enrol.enrol(
+          inviteToken: 'vpninv_dead',
+          label: 'Android device',
+          platform: 'android',
+        );
+
+        expect(ok, isFalse);
+        expect(enrol.status, EnrollStatus.notEnrolled);
+        expect(enrol.error, 'That invite code has been revoked.');
+        // Nothing half-written: no key for a device the server refused.
+        expect(await store.readPeerPrivateKey(), isNull);
+      },
+    );
+
+    test('a full invite reports the quota, not a generic failure', () async {
+      http.enqueue(
+        'POST',
+        '/enroll',
+        status: 409,
+        body: {
+          'error': {
+            'code': 'peer_quota_exceeded',
+            'message': 'Device limit reached (5).',
+            'details': {'limit': 5},
+          },
+        },
       );
-      http.enqueue('GET', '/auth/me', body: {
-        'user': {'id': 1, 'email': 'a@b.co', 'createdAt': '2026-01-01T00:00:00.000Z'},
-      });
 
-      await auth.bootstrap();
-
-      expect(auth.status, AuthStatus.signedIn);
-      expect(auth.user?.email, 'a@b.co');
-    });
-
-    test('signs out and clears storage when the stored token is dead', () async {
-      await store.saveSession(
-        accessToken: 'stale',
-        refreshToken: 'stale',
-        email: 'a@b.co',
-      );
-      http.enqueue('GET', '/auth/me', status: 401, body: {'error': {}});
-      http.enqueue('POST', '/auth/refresh', status: 401, body: {'error': {}});
-
-      await auth.bootstrap();
-
-      expect(auth.status, AuthStatus.signedOut);
-      expect(await store.readAccessToken(), isNull);
-    });
-
-    test('login persists the session', () async {
-      await signIn();
-
-      expect(auth.status, AuthStatus.signedIn);
-      expect(await store.readAccessToken(), 'access-1');
-      expect(await store.readRefreshToken(), 'refresh-1');
-    });
-
-    test('a rejected login surfaces the server message and stays signed out', () async {
-      http.enqueue('POST', '/auth/login', status: 401, body: {
-        'error': {'code': 'unauthorized', 'message': 'Email or password is incorrect'},
-      });
-
-      await expectLater(
-        auth.login(email: 'a@b.co', password: 'wrong-password'),
-        completion(isFalse),
+      final ok = await enrol.enrol(
+        inviteToken: 'vpninv_full',
+        label: 'Android device',
+        platform: 'android',
       );
 
-      expect(auth.status, AuthStatus.signedOut);
-      expect(auth.error, 'Email or password is incorrect');
-      expect(auth.isBusy, isFalse);
+      expect(ok, isFalse);
+      expect(enrol.error, contains('Device limit reached (5).'));
+      expect(enrol.status, EnrollStatus.notEnrolled);
+      expect(await store.readPeerPrivateKey(), isNull);
     });
 
     test('clearError removes the banner', () async {
-      http.enqueue('POST', '/auth/login', status: 401, body: {'error': {}});
-      await auth.login(email: 'a@b.co', password: 'a-long-enough-password');
+      http.enqueue('POST', '/enroll', status: 401, body: {'error': {}});
+      await enrol.enrol(inviteToken: 'x', label: 'l', platform: 'android');
+      expect(enrol.error, isNotNull);
 
-      auth.clearError();
+      enrol.clearError();
 
-      expect(auth.error, isNull);
+      expect(enrol.error, isNull);
     });
   });
 
-  group('ending a session', () {
-    test('signing out stops the tunnel, revokes the device, clears credentials', () async {
-      await signIn();
+  group('removing the device', () {
+    test(
+      'stops the tunnel, removes it on the server, clears credentials',
+      () async {
+        await enrolled();
+        await saveDevice();
+        tunnel.emit(TunnelStage.connected);
+
+        http.enqueue('DELETE', '/device', status: 204);
+
+        await enrol.removeDevice();
+
+        // The tunnel must not outlive the device that authorised it.
+        expect(tunnel.stopCalls, greaterThan(0));
+
+        final removal = http.requests.firstWhere((r) => r.path == '/device');
+        expect(removal.method, 'DELETE');
+        // It has to happen while the device token still works.
+        expect(removal.bearer, 'vpndev_live');
+
+        expect(enrol.status, EnrollStatus.notEnrolled);
+        expect(await store.readDeviceToken(), isNull);
+        expect(await store.readPeerPrivateKey(), isNull);
+        expect(await store.readPeerId(), isNull);
+      },
+    );
+
+    test('does not leave the previous device on screen', () async {
+      await enrolled();
       await saveDevice();
-      tunnel.emit(TunnelStage.connected);
-
-      http.enqueue('DELETE', '/devices/7', status: 204);
-      http.enqueue('POST', '/auth/logout', status: 204);
-
-      await auth.logout();
-
-      // The tunnel must not outlive the session.
-      expect(tunnel.stopCalls, greaterThan(0));
-
-      // The peer is released rather than left consuming a device slot with a
-      // private key that is about to be deleted and can never be recovered.
-      final revoke = http.requests.firstWhere((r) => r.path == '/devices/7');
-      expect(revoke.method, 'DELETE');
-      // It has to happen while the access token is still valid.
-      expect(revoke.bearer, 'access-1');
-
-      expect(auth.status, AuthStatus.signedOut);
-      expect(await store.readAccessToken(), isNull);
-      expect(await store.readPeerPrivateKey(), isNull);
-      expect(await store.readPeerId(), isNull);
-    });
-
-    test('does not leak the previous account into the next session', () async {
-      await signIn();
-      await saveDevice();
-      http.enqueue('GET', '/devices', body: {'devices': [deviceBody()['device']]});
+      http.enqueue('GET', '/device', body: {'device': deviceBody()['device']});
       http.enqueue('GET', '/servers', body: {'servers': serverList});
       await vpn.initialize();
       expect(vpn.device, isNotNull);
 
-      http.enqueue('DELETE', '/devices/7', status: 204);
-      http.enqueue('POST', '/auth/logout', status: 204);
-      await auth.logout();
+      http.enqueue('DELETE', '/device', status: 204);
+      await enrol.removeDevice();
 
-      // The device panel would otherwise still show the previous user's label
-      // and tunnel IP to whoever signs in next on this machine.
       expect(vpn.device, isNull);
     });
 
-    test('signing out completes even when the revoke call fails', () async {
-      await signIn();
+    test('a revoked device stops the tunnel but keeps nothing behind', () async {
+      await enrolled();
       await saveDevice();
+      tunnel.emit(TunnelStage.connected);
 
-      http.failWith = const SocketException('connection refused');
+      await enrol.handleRevoked();
 
-      await auth.logout();
-
-      expect(auth.status, AuthStatus.signedOut);
-      expect(await store.readAccessToken(), isNull);
       expect(tunnel.stopCalls, greaterThan(0));
-    });
-
-    test('an expired session stops the tunnel but keeps the device key', () async {
-      await signIn();
-      await saveDevice();
-
-      // The saved device makes connect() fetch its config; the token is dead.
-      http.enqueue('GET', '/devices/7/config', status: 401, body: {'error': {}});
-      http.enqueue('POST', '/auth/refresh', status: 401, body: {'error': {}});
-      await vpn.connect();
-
-      expect(auth.status, AuthStatus.signedOut);
-      expect(tunnel.stopCalls, greaterThan(0));
-      // Kept on purpose: the token is already dead so a revoke would fail, and
-      // signing back in should reuse the same peer instead of burning a slot.
-      expect(await store.readPeerPrivateKey(), privateKey);
-      expect(http.callCount('DELETE', '/devices/7'), 0);
-    });
-
-    test('deleting the account wipes the device key without revoking', () async {
-      await signIn();
-      await saveDevice();
-      http.enqueue('DELETE', '/auth/account', status: 204);
-
-      await expectLater(
-        auth.deleteAccount(password: 'a-long-enough-password'),
-        completion(isTrue),
-      );
-
-      expect(auth.status, AuthStatus.signedOut);
-      expect(await store.readAccessToken(), isNull);
-      expect(tunnel.stopCalls, greaterThan(0));
-      // The server already deleted every peer; a client revoke would 401.
-      expect(http.callCount('DELETE', '/devices/7'), 0);
-      // ...but the local key is useless now and must not linger.
+      expect(enrol.status, EnrollStatus.notEnrolled);
+      expect(await store.readDeviceToken(), isNull);
+      // The key belongs to a device the server has forgotten; keeping it would
+      // only produce a tunnel that never handshakes.
       expect(await store.readPeerPrivateKey(), isNull);
-    });
-
-    test('a wrong password leaves the user signed in', () async {
-      await signIn();
-      // 403 on purpose: a 401 here would look like an expired token and send
-      // the client down its refresh-then-sign-out path.
-      http.enqueue('DELETE', '/auth/account', status: 403, body: {
-        'error': {'code': 'invalid_password', 'message': 'Password is incorrect'},
-      });
-
-      await expectLater(
-        auth.deleteAccount(password: 'wrong-password'),
-        completion(isFalse),
-      );
-
-      expect(auth.status, AuthStatus.signedIn);
-      expect(auth.error, 'Password is incorrect');
-      expect(await store.readAccessToken(), 'access-1');
     });
   });
 
   group('VpnController.connect', () {
     setUp(() async {
-      await store.saveSession(
-        accessToken: 'access-1',
-        refreshToken: 'refresh-1',
-        email: 'a@b.co',
-      );
+      await store.saveDeviceToken('vpndev_live');
       // Mirrors the app: the stage subscription is wired before any connect.
       http.enqueue('GET', '/servers', body: {'servers': serverList});
       await vpn.initialize();
     });
 
-    test('generates the keypair locally and sends only the public half', () async {
-      http.enqueue('POST', '/devices', status: 201, body: deviceBody());
+    test('uses the stored key and never asks the server for one', () async {
+      await saveDevice();
+      http.enqueue('GET', '/device/config', body: deviceBody());
 
       await vpn.connect();
 
-      final create = http.requests.firstWhere((r) => r.path == '/devices');
-      final sentPublicKey = create.json['publicKey'] as String;
+      // Connecting is a read: it asks for a config and substitutes the key it
+      // already has. Nothing it sends carries the private half.
+      expect(http.requests.every((r) => !r.body.contains(privateKey)), isTrue);
 
-      // The private key must never appear in anything sent to the server.
-      expect(WireGuardKeys.isValidKey(sentPublicKey), isTrue);
-      expect(create.json.containsKey('privateKey'), isFalse);
-
-      final storedPrivate = await store.readPeerPrivateKey();
-      expect(storedPrivate, isNotNull);
-      expect(create.body, isNot(contains(storedPrivate!)));
-
-      // ...and the stored pair really is a pair.
-      final derived = await WireGuardKeys.publicKeyFor(
-        Uint8List.fromList(base64.decode(storedPrivate)),
-      );
-      expect(base64.encode(derived), sentPublicKey);
-      expect(await store.readPeerPublicKey(), sentPublicKey);
-
-      expect(await store.readPeerId(), 7);
       expect(vpn.isConnected, isTrue);
-      expect(tunnel.startedConfigs.single, contains('PrivateKey = $storedPrivate'));
+      expect(
+        tunnel.startedConfigs.single,
+        contains('PrivateKey = $privateKey'),
+      );
       expect(tunnel.startedConfigs.single, isNot(contains('<PRIVATE_KEY>')));
       expect(tunnel.startedServers.single, 'vpn.test:51820');
     });
 
     test('ignores a private key the server volunteers', () async {
-      // Older servers still return one; the device already has its own.
-      http.enqueue('POST', '/devices', status: 201, body: deviceBody(key: privateKey));
-
-      await vpn.connect();
-
-      expect(await store.readPeerPrivateKey(), isNot(privateKey));
-    });
-
-    test('reuses a saved device and substitutes the stored key', () async {
       await saveDevice();
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
-
-      await vpn.connect();
-
-      // No new peer: creating one per connect would exhaust the device quota.
-      expect(http.callCount('POST', '/devices'), 0);
-      expect(tunnel.startedConfigs.single, contains('PrivateKey = $privateKey'));
-      expect(tunnel.startedConfigs.single, isNot(contains('<PRIVATE_KEY>')));
-    });
-
-    test('re-registers when the saved peer was revoked elsewhere', () async {
-      await saveDevice();
-      http.enqueue('GET', '/devices/7/config', status: 404, body: {
-        'error': {'code': 'not_found', 'message': 'Peer not found'},
-      });
-      http.enqueue('POST', '/devices', status: 201, body: deviceBody(id: 9));
-
-      await vpn.connect();
-
-      expect(await store.readPeerId(), 9);
-      // A brand new pair, not the key of the peer that no longer exists.
-      expect(await store.readPeerPrivateKey(), isNot(privateKey));
-      expect(vpn.isConnected, isTrue);
-    });
-
-    test('shows the quota message with an actionable hint', () async {
-      http.enqueue('POST', '/devices', status: 409, body: {
-        'error': {
-          'code': 'peer_quota_exceeded',
-          'message': 'Device limit reached (5).',
-          'details': {'limit': 5},
+      // Older servers still return one; the device already has its own, and a
+      // key it did not generate is a key it cannot vouch for.
+      final volunteered = base64.encode(List.filled(32, 3));
+      http.enqueue(
+        'GET',
+        '/device/config',
+        body: {
+          ...deviceBody(),
+          'privateKey': volunteered,
+          'privateKeyIncluded': true,
         },
-      });
+      );
 
+      await vpn.connect();
+
+      expect(await store.readPeerPrivateKey(), privateKey);
+      expect(
+        tunnel.startedConfigs.single,
+        contains('PrivateKey = $privateKey'),
+      );
+      expect(tunnel.startedConfigs.single, isNot(contains(volunteered)));
+    });
+
+    test('never registers a device on connect', () async {
+      await saveDevice();
+      http.enqueue('GET', '/device/config', body: deviceBody());
+
+      await vpn.connect();
+
+      // A device is created exactly once, at enrolment. A second path here
+      // would burn a device slot on every connect.
+      expect(http.callCount('POST', '/enroll'), 0);
+    });
+
+    test(
+      'a device the server has forgotten sends the user back to enrolment',
+      () async {
+        await saveDevice();
+        http.enqueue(
+          'GET',
+          '/device/config',
+          status: 404,
+          body: {
+            'error': {'code': 'not_found', 'message': 'Peer not found'},
+          },
+        );
+
+        await vpn.connect();
+
+        expect(vpn.isConnected, isFalse);
+        expect(vpn.error, contains('set up again'));
+        // The dead key is dropped rather than retried forever.
+        expect(await store.readPeerId(), isNull);
+        expect(tunnel.startedConfigs, isEmpty);
+      },
+    );
+
+    test('refuses to connect when there is no stored key at all', () async {
       await vpn.connect();
 
       expect(vpn.isConnected, isFalse);
-      expect(vpn.error, contains('Device limit reached (5).'));
-      expect(vpn.error, contains('remove a device'));
+      expect(vpn.error, contains('invite code'));
       expect(tunnel.startedConfigs, isEmpty);
     });
 
     test('reports a network failure instead of hanging', () async {
+      await saveDevice();
       http.failWith = const SocketException('connection refused');
 
       await vpn.connect();
@@ -426,45 +398,45 @@ void main() {
     });
 
     test('surfaces a tunnel failure as its own message', () async {
-      http.enqueue('POST', '/devices', status: 201, body: deviceBody());
-      tunnel.startError = const TunnelException('The tunnel could not start: busy');
+      await saveDevice();
+      http.enqueue('GET', '/device/config', body: deviceBody());
+      tunnel.startError = const TunnelException(
+        'The tunnel could not start: busy',
+      );
 
       await vpn.connect();
 
       expect(vpn.isConnected, isFalse);
       expect(vpn.error, 'The tunnel could not start: busy');
-      // The device was still registered, so a retry will not create a second.
+      // The device survives a failed start; a retry must not need re-enrolling.
       expect(await store.readPeerId(), 7);
     });
 
     test('ignores a second tap while a connect is in flight', () async {
-      http.enqueue('POST', '/devices', status: 201, body: deviceBody());
+      await saveDevice();
+      http.enqueue('GET', '/device/config', body: deviceBody());
 
       await Future.wait([vpn.connect(), vpn.connect()]);
 
-      expect(http.callCount('POST', '/devices'), 1);
+      expect(http.callCount('GET', '/device/config'), 1);
       expect(tunnel.startedConfigs, hasLength(1));
     });
   });
 
   group('key rotation', () {
     setUp(() async {
-      await store.saveSession(
-        accessToken: 'access-1',
-        refreshToken: 'refresh-1',
-        email: 'a@b.co',
-      );
+      await store.saveDeviceToken('vpndev_live');
       http.enqueue('GET', '/servers', body: {'servers': serverList});
       await vpn.initialize();
     });
 
     test('leaves a fresh key alone', () async {
       await saveDevice(keyCreatedAt: DateTime.now().toUtc());
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
+      http.enqueue('GET', '/device/config', body: deviceBody());
 
       await vpn.connect();
 
-      expect(http.callCount('POST', '/devices/7/rotate'), 0);
+      expect(http.callCount('POST', '/device/rotate'), 0);
       expect(await store.readPeerPrivateKey(), privateKey);
     });
 
@@ -473,16 +445,18 @@ void main() {
         keyCreatedAt: DateTime.now().toUtc().subtract(const Duration(days: 8)),
       );
       final rotatedPublicKey = base64.encode(List.filled(32, 9));
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
+      http.enqueue('GET', '/device/config', body: deviceBody());
       http.enqueue(
         'POST',
-        '/devices/7/rotate',
+        '/device/rotate',
         body: deviceBody(peerPublicKey: rotatedPublicKey),
       );
 
       await vpn.connect();
 
-      final rotate = http.requests.firstWhere((r) => r.path == '/devices/7/rotate');
+      final rotate = http.requests.firstWhere(
+        (r) => r.path == '/device/rotate',
+      );
       final sent = rotate.json['publicKey'] as String;
       expect(WireGuardKeys.isValidKey(sent), isTrue);
 
@@ -498,69 +472,88 @@ void main() {
       await saveDevice(
         keyCreatedAt: DateTime.now().toUtc().subtract(const Duration(days: 30)),
       );
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
-      http.enqueue('POST', '/devices/7/rotate', body: deviceBody());
+      http.enqueue('GET', '/device/config', body: deviceBody());
+      http.enqueue('POST', '/device/rotate', body: deviceBody());
 
       await vpn.connect();
 
       expect(await store.readPeerId(), 7);
       expect(vpn.device?.locations.first.allowedIp, '10.8.0.7/32');
       // Rotation must not burn a device slot.
-      expect(http.callCount('POST', '/devices'), 0);
+      expect(http.callCount('POST', '/enroll'), 0);
     });
 
     test('connects with the old key when rotation fails', () async {
       await saveDevice(
         keyCreatedAt: DateTime.now().toUtc().subtract(const Duration(days: 8)),
       );
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
-      http.enqueue('POST', '/devices/7/rotate', status: 502, body: {
-        'error': {'code': 'wireguard_error', 'message': 'Could not install the new key'},
-      });
+      http.enqueue('GET', '/device/config', body: deviceBody());
+      http.enqueue(
+        'POST',
+        '/device/rotate',
+        status: 502,
+        body: {
+          'error': {
+            'code': 'wireguard_error',
+            'message': 'Could not install the new key',
+          },
+        },
+      );
 
       await vpn.connect();
 
       // A failed rotation must never stand between the user and their VPN.
       expect(vpn.isConnected, isTrue);
       expect(await store.readPeerPrivateKey(), privateKey);
-      expect(tunnel.startedConfigs.single, contains('PrivateKey = $privateKey'));
+      expect(
+        tunnel.startedConfigs.single,
+        contains('PrivateKey = $privateKey'),
+      );
     });
 
     test('rotates a device stored before rotation existed', () async {
       // An app upgrade: the key age is effectively unknown.
       await saveDevice(keyCreatedAt: DateTime.utc(2020));
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
-      http.enqueue('POST', '/devices/7/rotate', body: deviceBody());
+      http.enqueue('GET', '/device/config', body: deviceBody());
+      http.enqueue('POST', '/device/rotate', body: deviceBody());
 
       await vpn.connect();
 
-      expect(http.callCount('POST', '/devices/7/rotate'), 1);
+      expect(http.callCount('POST', '/device/rotate'), 1);
     });
 
     test('re-keys when the server no longer recognises the stored key', () async {
       // An interrupted rotation, or storage restored from a backup.
       await saveDevice(pub: base64.encode(List.filled(32, 3)));
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
-      http.enqueue('POST', '/devices/7/rotate', body: deviceBody());
+      http.enqueue('GET', '/device/config', body: deviceBody());
+      http.enqueue('POST', '/device/rotate', body: deviceBody());
 
       await vpn.connect();
 
       // Without this the tunnel would sit on "connecting" forever with no error.
-      expect(http.callCount('POST', '/devices/7/rotate'), 1);
+      expect(http.callCount('POST', '/device/rotate'), 1);
       expect(vpn.isConnected, isTrue);
     });
 
-    test('refuses to start the tunnel with a key the server rejected', () async {
-      await saveDevice(pub: base64.encode(List.filled(32, 3)));
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
-      http.enqueue('POST', '/devices/7/rotate', status: 502, body: {'error': {}});
+    test(
+      'refuses to start the tunnel with a key the server rejected',
+      () async {
+        await saveDevice(pub: base64.encode(List.filled(32, 3)));
+        http.enqueue('GET', '/device/config', body: deviceBody());
+        http.enqueue(
+          'POST',
+          '/device/rotate',
+          status: 502,
+          body: {'error': {}},
+        );
 
-      await vpn.connect();
+        await vpn.connect();
 
-      expect(vpn.isConnected, isFalse);
-      expect(vpn.error, contains('needs a new VPN key'));
-      expect(tunnel.startedConfigs, isEmpty);
-    });
+        expect(vpn.isConnected, isFalse);
+        expect(vpn.error, contains('needs a new VPN key'));
+        expect(tunnel.startedConfigs, isEmpty);
+      },
+    );
   });
 
   group('VpnController stage handling', () {
@@ -590,7 +583,9 @@ void main() {
     });
 
     test('surfaces a tunnel that cannot initialise at all', () async {
-      tunnel.initializeError = const TunnelException('VPN support is not available');
+      tunnel.initializeError = const TunnelException(
+        'VPN support is not available',
+      );
 
       http.enqueue('GET', '/servers', body: {'servers': serverList});
       await vpn.initialize();
@@ -611,13 +606,9 @@ void main() {
     });
 
     test('toggle connects when down and disconnects when up', () async {
-      await store.saveSession(
-        accessToken: 'access-1',
-        refreshToken: 'refresh-1',
-        email: 'a@b.co',
-      );
+      await store.saveDeviceToken('vpndev_live');
       await saveDevice();
-      http.enqueue('GET', '/devices/7/config', body: deviceBody());
+      http.enqueue('GET', '/device/config', body: deviceBody());
       http.enqueue('GET', '/servers', body: {'servers': serverList});
       await vpn.initialize();
 
@@ -631,16 +622,12 @@ void main() {
 
   group('VpnController.forgetDevice', () {
     setUp(() async {
-      await store.saveSession(
-        accessToken: 'access-1',
-        refreshToken: 'refresh-1',
-        email: 'a@b.co',
-      );
+      await store.saveDeviceToken('vpndev_live');
       await saveDevice();
     });
 
     test('revokes on the server and forgets the key locally', () async {
-      http.enqueue('DELETE', '/devices/7', status: 204);
+      http.enqueue('DELETE', '/device', status: 204);
 
       await vpn.forgetDevice();
 
@@ -651,7 +638,7 @@ void main() {
     });
 
     test('treats an already-missing peer as forgotten', () async {
-      http.enqueue('DELETE', '/devices/7', status: 404, body: {'error': {}});
+      http.enqueue('DELETE', '/device', status: 404, body: {'error': {}});
 
       await vpn.forgetDevice();
 
@@ -660,9 +647,17 @@ void main() {
     });
 
     test('keeps the key and reports the error on a real failure', () async {
-      http.enqueue('DELETE', '/devices/7', status: 500, body: {
-        'error': {'code': 'internal_error', 'message': 'Something went wrong'},
-      });
+      http.enqueue(
+        'DELETE',
+        '/device',
+        status: 500,
+        body: {
+          'error': {
+            'code': 'internal_error',
+            'message': 'Something went wrong',
+          },
+        },
+      );
 
       await vpn.forgetDevice();
 

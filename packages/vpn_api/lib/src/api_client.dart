@@ -8,11 +8,10 @@ import 'session_store.dart';
 
 /// HTTP client for the control plane.
 ///
-/// Adds the bearer token, and on a 401 refreshes once and replays the request.
-/// The refresh is single-flight: the backend rotates refresh tokens and treats
-/// a replayed one as a leak, revoking the whole session family. Two parallel
-/// refreshes would therefore log the user out, so concurrent callers all wait
-/// on the same in-flight refresh.
+/// Adds the device's bearer token and turns every failure into an
+/// [ApiException]. There is no refresh path and no retry: a device token is a
+/// lookup, not a claim that ages out, so a 401 means the device was revoked and
+/// replaying the request would only fail the same way.
 class ApiClient {
   ApiClient({
     required this.store,
@@ -30,15 +29,14 @@ class ApiClient {
 
   /// Where requests go. Settable because a self-hosted deployment can move,
   /// and rebuilding every installed client to follow it is not a reasonable
-  /// answer. Changing it is only safe while signed out: tokens and the
-  /// registered device belong to one control plane, so the caller has to clear
+  /// answer. Changing it is only safe while unenrolled: a device token and the
+  /// device it names belong to one control plane, so the caller has to clear
   /// them — see [VpnServerAddress].
   String get baseUrl => _baseUrl;
   set baseUrl(String value) => _baseUrl = value.replaceAll(RegExp(r'/+$'), '');
 
-  Future<bool>? _refreshInFlight;
-
-  /// Invoked when the refresh token is gone or rejected — the UI must sign out.
+  /// Invoked when the server no longer recognises this device — the UI must
+  /// send the user back to enrolment.
   void Function()? onSessionExpired;
 
   void dispose() => _http.close();
@@ -63,7 +61,6 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? body,
     bool authenticated = true,
-    bool allowRetry = true,
   }) async {
     final uri = Uri.parse('$_baseUrl$path');
     final headers = <String, String>{
@@ -72,10 +69,12 @@ class ApiClient {
     };
 
     if (authenticated) {
-      final token = await store.readAccessToken();
+      final token = await store.readDeviceToken();
       if (token == null) {
         throw const ApiException(
-          message: 'You are signed out. Please sign in again.',
+          message:
+              'This device is not set up yet. Enter your server address '
+              'and invite code.',
           code: 'unauthorized',
           statusCode: 401,
         );
@@ -101,18 +100,11 @@ class ApiClient {
       throw ApiException.network(error);
     }
 
-    if (response.statusCode == 401 && authenticated && allowRetry) {
-      if (await _refreshTokens()) {
-        return _send(
-          method,
-          path,
-          body: body,
-          authenticated: authenticated,
-          allowRetry: false,
-        );
-      }
-      onSessionExpired?.call();
-    }
+    // Nothing to retry: a device token is a lookup, not a claim that can go
+    // stale. A 401 means the server no longer knows this device, so the app has
+    // to enrol again rather than replay a request that will keep failing the
+    // same way.
+    if (response.statusCode == 401 && authenticated) onSessionExpired?.call();
 
     return _decode(response);
   }
@@ -152,35 +144,5 @@ class ApiClient {
     }
 
     return json;
-  }
-
-  Future<bool> _refreshTokens() {
-    return _refreshInFlight ??= _performRefresh().whenComplete(() {
-      _refreshInFlight = null;
-    });
-  }
-
-  Future<bool> _performRefresh() async {
-    final refreshToken = await store.readRefreshToken();
-    if (refreshToken == null) return false;
-
-    try {
-      final json = await _send(
-        'POST',
-        '/auth/refresh',
-        body: {'refreshToken': refreshToken},
-        authenticated: false,
-      );
-      final tokens = json['tokens'] as Map<String, dynamic>;
-      await store.saveTokens(
-        accessToken: tokens['accessToken'] as String,
-        refreshToken: tokens['refreshToken'] as String,
-      );
-      return true;
-    } on ApiException {
-      // Expired, revoked, or reused — either way the session is over.
-      await store.clearSession();
-      return false;
-    }
   }
 }

@@ -20,17 +20,21 @@ void main() {
 
   group('validation', () {
     test('accepts https', () {
-      expect(() => VpnServerAddress.validate('https://vpn.example.com'),
-          returnsNormally);
-    });
-
-    test('rejects http, because sign-in would send the password in the clear',
-        () {
       expect(
-        () => VpnServerAddress.validate('http://vpn.example.com'),
-        throwsA(isA<ServerAddressError>()),
+        () => VpnServerAddress.validate('https://vpn.example.com'),
+        returnsNormally,
       );
     });
+
+    test(
+      'rejects http, because sign-in would send the password in the clear',
+      () {
+        expect(
+          () => VpnServerAddress.validate('http://vpn.example.com'),
+          throwsA(isA<ServerAddressError>()),
+        );
+      },
+    );
 
     test('rejects an address with no scheme', () {
       expect(
@@ -53,35 +57,36 @@ void main() {
     expect(api.baseUrl, 'https://vpn.example.com');
   });
 
-  test('changing the address forgets the device registered with the old one',
-      () async {
-    await store.saveDevice(
-      peerId: 7,
-      privateKey: 'private',
-      publicKey: 'public',
-      keyCreatedAt: DateTime.now(),
-    );
-    await store.saveSession(
-      accessToken: 'access',
-      refreshToken: 'refresh',
-      email: 'a@b.co',
-    );
+  test(
+    'changing the address forgets the device registered with the old one',
+    () async {
+      await store.saveDevice(
+        peerId: 7,
+        privateKey: 'private',
+        publicKey: 'public',
+        keyCreatedAt: DateTime.now(),
+      );
+      await store.saveDeviceToken('vpndev_old');
 
-    await address.change('https://other.example.com');
+      await address.change('https://other.example.com');
 
-    // The keypair is registered with the previous control plane and means
-    // nothing to the new one; leaving it would fail as "connecting" forever.
-    expect(await store.readPeerId(), isNull);
-    expect(await store.readPeerPrivateKey(), isNull);
-    expect(await store.readAccessToken(), isNull);
-  });
+      // The keypair is registered with the previous control plane and means
+      // nothing to the new one; leaving it would fail as "connecting" forever.
+      expect(await store.readPeerId(), isNull);
+      expect(await store.readPeerPrivateKey(), isNull);
+      expect(await store.readDeviceToken(), isNull);
+    },
+  );
 
   test('the override survives a restart', () async {
     await address.change('https://moved.example.com');
 
     final freshApi = ApiClient(store: store, baseUrl: _build);
-    final reloaded =
-        VpnServerAddress(store: store, api: freshApi, buildDefault: _build);
+    final reloaded = VpnServerAddress(
+      store: store,
+      api: freshApi,
+      buildDefault: _build,
+    );
     expect(reloaded.current, _build, reason: 'not loaded yet');
 
     await reloaded.load();
@@ -89,18 +94,23 @@ void main() {
     expect(freshApi.baseUrl, 'https://moved.example.com');
   });
 
-  test('reset returns to the compiled-in address and drops the override',
-      () async {
-    await address.change('https://moved.example.com');
-    expect(address.isOverridden, isTrue);
+  test(
+    'reset returns to the compiled-in address and drops the override',
+    () async {
+      await address.change('https://moved.example.com');
+      expect(address.isOverridden, isTrue);
 
-    await address.reset();
+      await address.reset();
 
-    expect(address.current, _build);
-    expect(address.isOverridden, isFalse);
-    expect(await store.readServerUrl(), isNull,
-        reason: 'a reset should leave nothing behind to reload');
-  });
+      expect(address.current, _build);
+      expect(address.isOverridden, isFalse);
+      expect(
+        await store.readServerUrl(),
+        isNull,
+        reason: 'a reset should leave nothing behind to reload',
+      );
+    },
+  );
 
   test('setting the same address again does not wipe the device', () async {
     await store.saveDevice(

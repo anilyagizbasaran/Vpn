@@ -39,3 +39,18 @@ export function isEmail(value: string): boolean {
 export function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
+
+/**
+ * Control characters would corrupt log lines and the rendered .conf file.
+ *
+ * It lives here rather than in the route that needs it because it guards a
+ * property of the config renderer, not of one endpoint: a newline in a label
+ * becomes a line of its own in wg-quick's format, where a line is a directive.
+ */
+export function hasControlChars(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}

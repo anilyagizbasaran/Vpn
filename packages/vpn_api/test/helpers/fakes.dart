@@ -28,19 +28,24 @@ class FakeHttpClient extends http.BaseClient {
   /// Thrown instead of responding, to simulate a transport failure.
   Object? failWith;
 
+  /// [bodyText] queues a raw body, for the cases where the server does not
+  /// answer with JSON at all — a proxy error page, say.
   void enqueue(
     String method,
     String path, {
     int status = 200,
     Map<String, dynamic>? body,
+    String? bodyText,
   }) {
-    _queued.putIfAbsent('$method $path', () => []).add(
-      http.Response(
-        body == null ? '' : jsonEncode(body),
-        status,
-        headers: {'content-type': 'application/json'},
-      ),
-    );
+    _queued
+        .putIfAbsent('$method $path', () => [])
+        .add(
+          http.Response(
+            bodyText ?? (body == null ? '' : jsonEncode(body)),
+            status,
+            headers: {'content-type': 'application/json'},
+          ),
+        );
   }
 
   int callCount(String method, String path) =>
@@ -63,7 +68,10 @@ class FakeHttpClient extends http.BaseClient {
     final key = '${request.method} ${request.url.path}';
     final queue = _queued[key];
     final response = (queue == null || queue.isEmpty)
-        ? http.Response('{"error":{"code":"not_stubbed","message":"$key"}}', 500)
+        ? http.Response(
+            '{"error":{"code":"not_stubbed","message":"$key"}}',
+            500,
+          )
         : queue.removeAt(0);
 
     return http.StreamedResponse(
@@ -80,35 +88,11 @@ class InMemorySessionStore implements SessionStore {
   final Map<String, String> values = {};
 
   @override
-  Future<String?> readAccessToken() async => values['access'];
+  Future<String?> readDeviceToken() async => values['device'];
 
   @override
-  Future<String?> readRefreshToken() async => values['refresh'];
+  Future<void> saveDeviceToken(String token) async => values['device'] = token;
 
   @override
-  Future<void> saveSession({
-    required String accessToken,
-    required String refreshToken,
-    required String email,
-  }) async {
-    values['access'] = accessToken;
-    values['refresh'] = refreshToken;
-    values['email'] = email;
-  }
-
-  @override
-  Future<void> saveTokens({
-    required String accessToken,
-    required String refreshToken,
-  }) async {
-    values['access'] = accessToken;
-    values['refresh'] = refreshToken;
-  }
-
-  @override
-  Future<void> clearSession() async {
-    values.remove('access');
-    values.remove('refresh');
-    values.remove('email');
-  }
+  Future<void> clearSession() async => values.remove('device');
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { LATEST_SCHEMA_VERSION, migrate } from '../src/db/migrate.js';
+import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db/migrate.js';
+import Database from 'better-sqlite3';
 import { openDatabase, type Db } from '../src/db/sqlite.js';
 import { createSqliteRepositories } from '../src/db/sqliteRepositories.js';
 import type { Repositories } from '../src/db/repositories.js';
@@ -8,8 +9,9 @@ import { serverInput } from './helpers.js';
 
 /**
  * The schema carries real invariants — the partial unique indexes are what
- * make concurrent allocation safe, and the cascades are what make account
- * deletion complete. These test the guarantees, not the SQL text.
+ * make concurrent allocation safe, and the cascades are what make revoking an
+ * invite actually cut its devices off. These test the guarantees, not the SQL
+ * text.
  */
 
 let db: Db;
@@ -17,16 +19,24 @@ let repos: Repositories;
 
 const key = (n: number) => Buffer.alloc(32, n).toString('base64');
 
+let tokenCounter = 0;
+const nextToken = () => `hash-${(tokenCounter += 1)}`;
+
 async function seed() {
-  const user = await repos.users.create({ email: 'a@example.com', passwordHash: 'hash' });
+  const invite = await repos.invites.create({
+    label: 'a',
+    tokenHash: nextToken(),
+    deviceLimit: 5,
+  });
   const server = await repos.servers.upsertByRegion(serverInput());
   const device = await repos.devices.create({
-    userId: user.id,
+    inviteId: invite.id,
     label: 'phone',
     platform: 'android',
     publicKey: key(1),
+    tokenHash: nextToken(),
   });
-  return { user, server, device };
+  return { invite, server, device };
 }
 
 beforeEach(() => {
@@ -40,13 +50,96 @@ describe('migrations', () => {
   });
 
   it('is idempotent — re-running changes nothing', async () => {
-    const { user } = await seed();
+    const { device } = await seed();
 
     migrate(db);
     migrate(db);
 
     expect(db.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
-    await expect(repos.users.findById(user.id)).resolves.not.toBeNull();
+    await expect(repos.devices.findById(device.id)).resolves.not.toBeNull();
+  });
+
+  it('carries an enrolled device, and its address, across the account removal', () => {
+    // The upgrade every existing install runs. Two devices at v5: one from the
+    // account era with no credential, one already enrolled with an invite.
+    // A raw handle: openDatabase() migrates on open, which would land it at
+    // the current version and prove nothing about the upgrade.
+    const old = new Database(':memory:');
+    old.pragma('foreign_keys = ON');
+    for (const step of MIGRATIONS) {
+      if (step.version > 5) break;
+      old.exec(step.up);
+      old.pragma(`user_version = ${step.version}`);
+    }
+
+    const at = new Date().toISOString();
+    old.prepare('INSERT INTO users (email, password_hash, created_at) VALUES (?,?,?)').run(
+      'me@example.com',
+      'hash',
+      at,
+    );
+    old
+      .prepare(
+        `INSERT INTO servers (region, public_key, endpoint, listen_port, interface_name,
+                              address_pool_cidr, server_address, dns, is_default, created_at)
+         VALUES ('de-fra','k','vpn:51820',51820,'wg0','10.8.0.0/24','10.8.0.1','1.1.1.1',1,?)`,
+      )
+      .run(at);
+    old
+      .prepare('INSERT INTO invites (label, token_hash, device_limit, created_at) VALUES (?,?,?,?)')
+      .run('mine', 'invite-hash', 5, at);
+    old
+      .prepare(
+        `INSERT INTO devices (user_id, invite_id, label, platform, public_key, token_hash, created_at)
+         VALUES (1, NULL, 'account phone', 'android', 'oldkey', NULL, ?)`,
+      )
+      .run(at);
+    old
+      .prepare(
+        `INSERT INTO devices (user_id, invite_id, label, platform, public_key, token_hash, created_at)
+         VALUES (NULL, 1, 'enrolled laptop', 'linux', 'newkey', 'device-hash', ?)`,
+      )
+      .run(at);
+    for (const deviceId of [1, 2]) {
+      old
+        .prepare('INSERT INTO peers (device_id, server_id, allowed_ip, created_at) VALUES (?,1,?,?)')
+        .run(deviceId, `10.8.0.${deviceId + 1}/32`, at);
+    }
+
+    migrate(old);
+
+    const devices = old.prepare('SELECT label FROM devices').all() as { label: string }[];
+    const peers = old.prepare('SELECT allowed_ip FROM peers').all() as { allowed_ip: string }[];
+
+    // The account device goes; it holds no credential it could authenticate
+    // with, so keeping it would only reserve an address nobody can reclaim.
+    expect(devices.map((d) => d.label)).toEqual(['enrolled laptop']);
+
+    // ...and the surviving device keeps its address. Migrations run with
+    // foreign keys off, so nothing here happens by cascade: rebuilding
+    // `devices` used to wipe every peer row in the database, leaving devices
+    // that looked fine and tunnels that silently never handshook.
+    expect(peers.map((p) => p.allowed_ip)).toEqual(['10.8.0.3/32']);
+
+    old.close();
+  });
+
+  it('leaves no trace of accounts behind', () => {
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+        name: string;
+      }[]
+    ).map((t) => t.name);
+
+    // v6 dropped them. A table that still existed would be a place for a
+    // credential to survive a migration nobody would think to check.
+    expect(tables).not.toContain('users');
+    expect(tables).not.toContain('refresh_tokens');
+
+    const deviceColumns = (
+      db.prepare('PRAGMA table_info(devices)').all() as { name: string }[]
+    ).map((c) => c.name);
+    expect(deviceColumns).not.toContain('user_id');
   });
 
   it('enforces foreign keys, without which the cascades are decorative', () => {
@@ -72,82 +165,91 @@ describe('migrations', () => {
   });
 });
 
-describe('users', () => {
-  it('rejects a duplicate email as a typed error, case-insensitively', async () => {
-    await repos.users.create({ email: 'dup@example.com', passwordHash: 'h' });
-
-    await expect(
-      repos.users.create({ email: 'DUP@example.com', passwordHash: 'h' }),
-    ).rejects.toBeInstanceOf(UniqueConstraintError);
-  });
-
-  it('cascades devices, peers and refresh tokens on delete', async () => {
-    const { user, server, device } = await seed();
+describe('invites', () => {
+  it('cascades devices and peers when an invite is deleted', async () => {
+    const { invite, server, device } = await seed();
     const peer = await repos.peers.create({
       deviceId: device.id,
       serverId: server.id,
       allowedIp: '10.8.0.2/32',
       presharedKeyEnc: null,
     });
-    await repos.refreshTokens.create({
-      userId: user.id,
-      tokenHash: 'h1',
-      familyId: 'f1',
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-    });
 
-    await expect(repos.users.delete(user.id)).resolves.toBe(true);
+    db.prepare('DELETE FROM invites WHERE id = ?').run(invite.id);
 
-    // Peers cascade through devices, which cascade through users.
+    // Peers cascade through devices, which cascade through invites. Without
+    // this an invite could be deleted while the devices it authorised kept
+    // working.
     await expect(repos.devices.findById(device.id)).resolves.toBeNull();
     await expect(repos.peers.findById(peer.id)).resolves.toBeNull();
-    await expect(repos.refreshTokens.findByHash('h1')).resolves.toBeNull();
-    await expect(repos.users.delete(user.id)).resolves.toBe(false);
+  });
+
+  it('refuses two devices sharing a token hash', async () => {
+    const { invite, device } = await seed();
+
+    // The index is what makes a device token a lookup: one hash, one device,
+    // no ambiguity about who a request came from.
+    await expect(
+      repos.devices.create({
+        inviteId: invite.id,
+        label: 'clone',
+        platform: 'ios',
+        publicKey: key(8),
+        tokenHash: device.tokenHash,
+      }),
+    ).rejects.toBeInstanceOf(UniqueConstraintError);
   });
 });
 
 describe('devices', () => {
   it('refuses two live devices with the same public key', async () => {
-    const { user } = await seed();
+    const { invite } = await seed();
 
     await expect(
       repos.devices.create({
-        userId: user.id,
+        inviteId: invite.id,
         label: 'clone',
         platform: 'ios',
         publicKey: key(1),
+        tokenHash: nextToken(),
       }),
     ).rejects.toMatchObject({ constraintHint: 'public_key' });
   });
 
   it('frees the key for reuse once a device is revoked', async () => {
-    const { user, device } = await seed();
+    const { invite, device } = await seed();
     await repos.devices.revoke(device.id, new Date().toISOString());
 
     await expect(
       repos.devices.create({
-        userId: user.id,
+        inviteId: invite.id,
         label: 'replacement',
         platform: 'ios',
         publicKey: key(1),
+        tokenHash: nextToken(),
       }),
     ).resolves.toBeTruthy();
   });
 
-  it('counts only live devices, per user', async () => {
-    const { user, device } = await seed();
-    const other = await repos.users.create({ email: 'b@example.com', passwordHash: 'h' });
+  it('counts only live devices, per invite', async () => {
+    const { invite, device } = await seed();
+    const other = await repos.invites.create({
+      label: 'b',
+      tokenHash: nextToken(),
+      deviceLimit: 5,
+    });
     await repos.devices.create({
-      userId: other.id,
+      inviteId: other.id,
       label: 'theirs',
       platform: 'linux',
       publicKey: key(9),
+      tokenHash: nextToken(),
     });
 
-    await expect(repos.devices.countActiveByUser(user.id)).resolves.toBe(1);
+    await expect(repos.devices.countActiveByInvite(invite.id)).resolves.toBe(1);
     await repos.devices.revoke(device.id, new Date().toISOString());
-    await expect(repos.devices.countActiveByUser(user.id)).resolves.toBe(0);
-    await expect(repos.devices.countActiveByUser(other.id)).resolves.toBe(1);
+    await expect(repos.devices.countActiveByInvite(invite.id)).resolves.toBe(0);
+    await expect(repos.devices.countActiveByInvite(other.id)).resolves.toBe(1);
   });
 
   it('keeps the addresses when the key rotates', async () => {
@@ -172,12 +274,13 @@ describe('devices', () => {
 
 describe('peers — partial unique indexes', () => {
   it('refuses two live peers on the same address', async () => {
-    const { server, device, user } = await seed();
+    const { server, device, invite } = await seed();
     const second = await repos.devices.create({
-      userId: user.id,
+      inviteId: invite.id,
       label: 'other',
       platform: 'ios',
       publicKey: key(5),
+      tokenHash: nextToken(),
     });
 
     await repos.peers.create({
@@ -242,7 +345,7 @@ describe('peers — partial unique indexes', () => {
   });
 
   it('frees the address once revoked, keeping the audit row', async () => {
-    const { server, device, user } = await seed();
+    const { server, device, invite } = await seed();
     const peer = await repos.peers.create({
       deviceId: device.id,
       serverId: server.id,
@@ -253,10 +356,11 @@ describe('peers — partial unique indexes', () => {
     await expect(repos.peers.revoke(peer.id, new Date().toISOString())).resolves.toBe(true);
 
     const other = await repos.devices.create({
-      userId: user.id,
+      inviteId: invite.id,
       label: 'next',
       platform: 'ios',
       publicKey: key(7),
+      tokenHash: nextToken(),
     });
     await expect(
       repos.peers.create({
@@ -441,68 +545,5 @@ describe('usage', () => {
       rxBytes: 125,
       txBytes: 125,
     });
-  });
-});
-
-describe('refresh tokens', () => {
-  it('revokes a whole family at once', async () => {
-    const { user } = await seed();
-    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
-
-    for (const hash of ['t1', 't2']) {
-      await repos.refreshTokens.create({
-        userId: user.id,
-        tokenHash: hash,
-        familyId: 'fam',
-        expiresAt,
-      });
-    }
-    await repos.refreshTokens.create({
-      userId: user.id,
-      tokenHash: 't3',
-      familyId: 'other',
-      expiresAt,
-    });
-
-    await repos.refreshTokens.revokeFamily('fam', new Date().toISOString());
-
-    expect((await repos.refreshTokens.findByHash('t1'))?.revokedAt).not.toBeNull();
-    expect((await repos.refreshTokens.findByHash('t3'))?.revokedAt).toBeNull();
-  });
-
-  it('drops expired and long-revoked tokens, keeping recent revocations', async () => {
-    const { user } = await seed();
-    const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
-    const DAY = 86_400_000;
-
-    await repos.refreshTokens.create({
-      userId: user.id,
-      tokenHash: 'live',
-      familyId: 'f1',
-      expiresAt: iso(30 * DAY),
-    });
-    await repos.refreshTokens.create({
-      userId: user.id,
-      tokenHash: 'expired',
-      familyId: 'f2',
-      expiresAt: iso(-DAY),
-    });
-    const recent = await repos.refreshTokens.create({
-      userId: user.id,
-      tokenHash: 'just-revoked',
-      familyId: 'f3',
-      expiresAt: iso(30 * DAY),
-    });
-    await repos.refreshTokens.revoke(recent.id, iso(-60_000));
-
-    const deleted = await repos.refreshTokens.deleteStale({
-      expiredBefore: iso(0),
-      revokedBefore: iso(-7 * DAY),
-    });
-
-    expect(deleted).toBe(1);
-    // Kept: a replay of a freshly revoked token must still trip reuse detection.
-    await expect(repos.refreshTokens.findByHash('just-revoked')).resolves.not.toBeNull();
-    await expect(repos.refreshTokens.findByHash('live')).resolves.not.toBeNull();
   });
 });

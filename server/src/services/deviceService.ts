@@ -16,7 +16,6 @@ import { renderWgQuickConfig } from './configRenderer.js';
 import { generateKeyPair, generatePresharedKey } from './keys.js';
 
 export interface DeviceServiceConfig {
-  maxDevicesPerUser: number;
   enablePresharedKey: boolean;
   /** 64 hex chars; only read when `enablePresharedKey` is true. */
   pskEncryptionKey: string;
@@ -119,16 +118,6 @@ export class DeviceService {
     return servers.map((server) => this.toServerView(server));
   }
 
-  private async requireOwnedDevice(userId: number, deviceId: number): Promise<Device> {
-    const device = await this.repos.devices.findById(deviceId);
-    // A device belonging to somebody else is reported as missing, so the API
-    // cannot be used to probe which device ids exist.
-    if (!device || device.userId !== userId || device.revokedAt) {
-      throw notFound('Device not found');
-    }
-    return device;
-  }
-
   private decryptPsk(peer: Peer): string | null {
     if (!peer.presharedKeyEnc) return null;
     return decryptSecret(this.config.pskEncryptionKey, peer.presharedKeyEnc);
@@ -167,11 +156,6 @@ export class DeviceService {
         ];
       }),
     };
-  }
-
-  async listDevices(userId: number): Promise<DeviceView[]> {
-    const devices = await this.repos.devices.listActiveByUser(userId);
-    return Promise.all(devices.map((device) => this.toDeviceView(device)));
   }
 
   /**
@@ -242,13 +226,21 @@ export class DeviceService {
    * Every server, not just the default: switching region then costs the client
    * one line of its config rather than a round trip, and the quota keeps
    * counting devices instead of device-region pairs.
+   *
+   * This is the only way a device comes into existence. There is no second
+   * path — the account one is gone — so quota, addressing and key ownership
+   * are decided in exactly one place and cannot drift apart.
    */
-  async createDevice(userId: number, input: CreateDeviceRequest): Promise<DeviceConfigView> {
-    const active = await this.repos.devices.countActiveByUser(userId);
-    if (active >= this.config.maxDevicesPerUser) {
+  async enrolDevice(
+    owner: { inviteId: number; tokenHash: string },
+    limit: number,
+    input: CreateDeviceRequest,
+  ): Promise<DeviceConfigView> {
+    const active = await this.repos.devices.countActiveByInvite(owner.inviteId);
+    if (active >= limit) {
       throw quotaExceeded(
-        `Device limit reached (${this.config.maxDevicesPerUser}). Remove a device before adding a new one.`,
-        { limit: this.config.maxDevicesPerUser, active },
+        `Device limit reached (${limit}). Remove a device before adding a new one.`,
+        { limit, active },
       );
     }
 
@@ -271,7 +263,7 @@ export class DeviceService {
     let device: Device;
     try {
       device = await this.repos.devices.create({
-        userId,
+        ...owner,
         label: input.label,
         platform: input.platform ?? 'unknown',
         publicKey,
@@ -290,7 +282,7 @@ export class DeviceService {
     }
 
     logger.info('device registered', {
-      userId,
+      inviteId: owner.inviteId,
       deviceId: device.id,
       servers: servers.length,
       clientKeygen: input.publicKey !== undefined,
@@ -342,16 +334,27 @@ export class DeviceService {
   }
 
   /**
-   * The config for one device in one region. Omitting the region gives the
-   * default server, which is what a client that has never chosen one wants.
+   * What an enrolled device may do to itself: read its config, replace its key,
+   * remove itself.
+   *
+   * Thin on purpose. The middleware has already resolved the device from its
+   * token, so there is no ownership left to check — a device token names one
+   * device and cannot name another, which is why these take a [Device] and not
+   * an id.
    */
-  async getDeviceConfig(
-    userId: number,
-    deviceId: number,
-    serverId?: number,
-  ): Promise<DeviceConfigView> {
-    const device = await this.requireOwnedDevice(userId, deviceId);
+  configFor(device: Device, serverId?: number): Promise<DeviceConfigView> {
+    return this.buildConfigFor(device, serverId);
+  }
 
+  rotateKeyFor(device: Device, newPublicKey: string): Promise<DeviceConfigView> {
+    return this.rotate(device, newPublicKey);
+  }
+
+  revokeOwn(device: Device): Promise<void> {
+    return this.revoke(device);
+  }
+
+  private async buildConfigFor(device: Device, serverId?: number): Promise<DeviceConfigView> {
     const server = serverId
       ? await this.repos.servers.findById(serverId)
       : ((await this.repos.servers.getDefault()) ??
@@ -374,16 +377,11 @@ export class DeviceService {
    * for up to one poll interval. That window is the price of not giving the
    * control plane root on every node.
    */
-  async rotateKey(
-    userId: number,
-    deviceId: number,
-    newPublicKey: string,
-  ): Promise<DeviceConfigView> {
+  private async rotate(device: Device, newPublicKey: string): Promise<DeviceConfigView> {
     if (!isWireGuardKey(newPublicKey)) {
       throw badRequest('publicKey must be a base64-encoded 32-byte WireGuard key');
     }
 
-    const device = await this.requireOwnedDevice(userId, deviceId);
     if (device.publicKey === newPublicKey) {
       throw conflict('That key is already the active key for this device');
     }
@@ -402,7 +400,7 @@ export class DeviceService {
       throw error;
     }
 
-    logger.info('device key rotated', { userId, deviceId: device.id });
+    logger.info('device key rotated', { deviceId: device.id });
 
     const server =
       (await this.repos.servers.getDefault()) ??
@@ -410,9 +408,7 @@ export class DeviceService {
     return this.buildConfig(rotated, server, null);
   }
 
-  /** Revokes a device everywhere. Its addresses go back into the pools. */
-  async revokeDevice(userId: number, deviceId: number): Promise<void> {
-    const device = await this.requireOwnedDevice(userId, deviceId);
+  private async revoke(device: Device): Promise<void> {
     const at = new Date().toISOString();
 
     // Peers first: a revoked device with live peer rows would keep its
@@ -420,18 +416,6 @@ export class DeviceService {
     const released = await this.repos.peers.revokeAllForDevice(device.id, at);
     await this.repos.devices.revoke(device.id, at);
 
-    logger.info('device revoked', { userId, deviceId: device.id, addressesReleased: released });
-  }
-
-  /** Revokes every device on an account. Used by account deletion. */
-  async revokeAllForUser(userId: number): Promise<number> {
-    const devices = await this.repos.devices.listActiveByUser(userId);
-    const at = new Date().toISOString();
-
-    for (const device of devices) {
-      await this.repos.peers.revokeAllForDevice(device.id, at);
-      await this.repos.devices.revoke(device.id, at);
-    }
-    return devices.length;
+    logger.info('device revoked', { deviceId: device.id, addressesReleased: released });
   }
 }

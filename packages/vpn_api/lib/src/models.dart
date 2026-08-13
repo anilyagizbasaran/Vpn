@@ -1,48 +1,6 @@
 // Wire models for the control plane API. Hand-written on purpose: the payload
 // is small and stable, and this avoids a build_runner step.
 
-class AuthTokens {
-  const AuthTokens({
-    required this.accessToken,
-    required this.refreshToken,
-    required this.expiresIn,
-  });
-
-  final String accessToken;
-  final String refreshToken;
-  final int expiresIn;
-
-  factory AuthTokens.fromJson(Map<String, dynamic> json) => AuthTokens(
-    accessToken: json['accessToken'] as String,
-    refreshToken: json['refreshToken'] as String,
-    expiresIn: (json['expiresIn'] as num?)?.toInt() ?? 900,
-  );
-}
-
-class AccountUser {
-  const AccountUser({required this.id, required this.email});
-
-  final int id;
-  final String email;
-
-  factory AccountUser.fromJson(Map<String, dynamic> json) => AccountUser(
-    id: (json['id'] as num).toInt(),
-    email: json['email'] as String,
-  );
-}
-
-class AuthSession {
-  const AuthSession({required this.user, required this.tokens});
-
-  final AccountUser user;
-  final AuthTokens tokens;
-
-  factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
-    user: AccountUser.fromJson(json['user'] as Map<String, dynamic>),
-    tokens: AuthTokens.fromJson(json['tokens'] as Map<String, dynamic>),
-  );
-}
-
 /// One region a device can connect through.
 class VpnServer {
   const VpnServer({

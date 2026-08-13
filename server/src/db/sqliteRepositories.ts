@@ -5,36 +5,26 @@ import type {
   CreateServerInput,
   DeviceRepository,
   PeerRepository,
+  InviteRepository,
   PeerWithDevice,
   Repositories,
-  RefreshTokenRepository,
   ServerRepository,
   UsageReport,
   UsageRepository,
-  UserRepository,
 } from './repositories.js';
 import { UniqueConstraintError } from './types.js';
 import type {
   Device,
+  Invite,
   Peer,
   PeerUsage,
-  RefreshTokenRecord,
   ServerStatus,
-  User,
   VpnServer,
 } from './types.js';
 
 const nowIso = () => new Date().toISOString();
 
 // --- row shapes ------------------------------------------------------------
-
-interface UserRow {
-  id: number;
-  email: string;
-  password_hash: string;
-  created_at: string;
-  disabled_at: string | null;
-}
 
 interface ServerRow {
   id: number;
@@ -58,12 +48,23 @@ interface ServerRow {
 
 interface DeviceRow {
   id: number;
-  user_id: number;
+  invite_id: number;
   label: string;
   platform: string;
   public_key: string;
+  token_hash: string;
   created_at: string;
   key_rotated_at: string | null;
+  revoked_at: string | null;
+}
+
+interface InviteRow {
+  id: number;
+  label: string;
+  token_hash: string;
+  device_limit: number;
+  created_at: string;
+  last_used_at: string | null;
   revoked_at: string | null;
 }
 
@@ -92,24 +93,6 @@ interface UsageRow {
   updated_at: string;
 }
 
-interface RefreshTokenRow {
-  id: number;
-  user_id: number;
-  token_hash: string;
-  family_id: string;
-  expires_at: string;
-  created_at: string;
-  revoked_at: string | null;
-}
-
-const toUser = (r: UserRow): User => ({
-  id: r.id,
-  email: r.email,
-  passwordHash: r.password_hash,
-  createdAt: r.created_at,
-  disabledAt: r.disabled_at,
-});
-
 const toServer = (r: ServerRow): VpnServer => ({
   id: r.id,
   region: r.region,
@@ -132,12 +115,23 @@ const toServer = (r: ServerRow): VpnServer => ({
 
 const toDevice = (r: DeviceRow): Device => ({
   id: r.id,
-  userId: r.user_id,
+  inviteId: r.invite_id,
   label: r.label,
   platform: r.platform,
   publicKey: r.public_key,
+  tokenHash: r.token_hash,
   createdAt: r.created_at,
   keyRotatedAt: r.key_rotated_at,
+  revokedAt: r.revoked_at,
+});
+
+const toInvite = (r: InviteRow): Invite => ({
+  id: r.id,
+  label: r.label,
+  tokenHash: r.token_hash,
+  deviceLimit: r.device_limit,
+  createdAt: r.created_at,
+  lastUsedAt: r.last_used_at,
   revokedAt: r.revoked_at,
 });
 
@@ -165,16 +159,6 @@ const toUsage = (r: UsageRow): PeerUsage => ({
   updatedAt: r.updated_at,
 });
 
-const toRefreshToken = (r: RefreshTokenRow): RefreshTokenRecord => ({
-  id: r.id,
-  userId: r.user_id,
-  tokenHash: r.token_hash,
-  familyId: r.family_id,
-  expiresAt: r.expires_at,
-  createdAt: r.created_at,
-  revokedAt: r.revoked_at,
-});
-
 /**
  * Turns better-sqlite3's constraint errors into a driver-agnostic error.
  *
@@ -200,41 +184,53 @@ function rethrowUnique(error: unknown, hintByColumn: Record<string, string>): ne
 
 // --- repositories ----------------------------------------------------------
 
-class SqliteUserRepository implements UserRepository {
+class SqliteInviteRepository implements InviteRepository {
   constructor(private readonly db: Db) {}
 
-  async create(input: { email: string; passwordHash: string }): Promise<User> {
-    try {
-      const row = this.db
-        .prepare(
-          `INSERT INTO users (email, password_hash, created_at)
-           VALUES (@email, @passwordHash, @createdAt)
-           RETURNING *`,
-        )
-        .get({ ...input, createdAt: nowIso() }) as UserRow;
-      return toUser(row);
-    } catch (error) {
-      rethrowUnique(error, { 'users.email': 'email' });
-    }
-  }
-
-  async findByEmail(email: string): Promise<User | null> {
+  async create(input: { label: string; tokenHash: string; deviceLimit: number }): Promise<Invite> {
     const row = this.db
-      .prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE')
-      .get(email) as UserRow | undefined;
-    return row ? toUser(row) : null;
+      .prepare(
+        `INSERT INTO invites (label, token_hash, device_limit, created_at)
+         VALUES (@label, @tokenHash, @deviceLimit, @createdAt)
+         RETURNING *`,
+      )
+      .get({ ...input, createdAt: nowIso() }) as InviteRow;
+    return toInvite(row);
   }
 
-  async findById(id: number): Promise<User | null> {
-    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
-    return row ? toUser(row) : null;
+  async findById(id: number): Promise<Invite | null> {
+    const row = this.db.prepare('SELECT * FROM invites WHERE id = ?').get(id) as
+      | InviteRow
+      | undefined;
+    return row ? toInvite(row) : null;
+  }
+
+  async findByTokenHash(tokenHash: string): Promise<Invite | null> {
+    const row = this.db.prepare('SELECT * FROM invites WHERE token_hash = ?').get(tokenHash) as
+      | InviteRow
+      | undefined;
+    return row ? toInvite(row) : null;
+  }
+
+  async list(): Promise<Invite[]> {
+    const rows = this.db.prepare('SELECT * FROM invites ORDER BY id').all() as InviteRow[];
+    return rows.map(toInvite);
+  }
+
+  async touch(id: number, usedAt: string): Promise<void> {
+    this.db.prepare('UPDATE invites SET last_used_at = ? WHERE id = ?').run(usedAt, id);
+  }
+
+  async revoke(id: number, revokedAt: string): Promise<boolean> {
+    return (
+      this.db
+        .prepare('UPDATE invites SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+        .run(revokedAt, id).changes > 0
+    );
   }
 
   async delete(id: number): Promise<boolean> {
-    // `PRAGMA foreign_keys = ON` (set in openDatabase) is what makes the
-    // ON DELETE CASCADE on devices and refresh tokens actually fire, and peers
-    // cascade from devices in turn.
-    return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
+    return this.db.prepare('DELETE FROM invites WHERE id = ?').run(id).changes > 0;
   }
 }
 
@@ -348,14 +344,22 @@ class SqliteDeviceRepository implements DeviceRepository {
     try {
       const row = this.db
         .prepare(
-          `INSERT INTO devices (user_id, label, platform, public_key, created_at)
-           VALUES (@userId, @label, @platform, @publicKey, @createdAt)
+          `INSERT INTO devices (invite_id, label, platform, public_key,
+                                token_hash, created_at)
+           VALUES (@inviteId, @label, @platform, @publicKey,
+                   @tokenHash, @createdAt)
            RETURNING *`,
         )
         .get({ ...input, createdAt: nowIso() }) as DeviceRow;
       return toDevice(row);
     } catch (error) {
-      rethrowUnique(error, { 'devices.public_key': 'public_key' });
+      rethrowUnique(error, {
+        'devices.public_key': 'public_key',
+        // Astronomically unlikely — 32 random bytes — but a raw SqliteError
+        // escaping here would surface as a 500 rather than a retryable
+        // conflict, and the caller could not tell the two apart.
+        'devices.token_hash': 'token_hash',
+      });
     }
   }
 
@@ -366,17 +370,24 @@ class SqliteDeviceRepository implements DeviceRepository {
     return row ? toDevice(row) : null;
   }
 
-  async listActiveByUser(userId: number): Promise<Device[]> {
+  async findByTokenHash(tokenHash: string): Promise<Device | null> {
+    const row = this.db
+      .prepare('SELECT * FROM devices WHERE token_hash = ? AND revoked_at IS NULL')
+      .get(tokenHash) as DeviceRow | undefined;
+    return row ? toDevice(row) : null;
+  }
+
+  async listActiveByInvite(inviteId: number): Promise<Device[]> {
     const rows = this.db
-      .prepare('SELECT * FROM devices WHERE user_id = ? AND revoked_at IS NULL ORDER BY id')
-      .all(userId) as DeviceRow[];
+      .prepare('SELECT * FROM devices WHERE invite_id = ? AND revoked_at IS NULL ORDER BY id')
+      .all(inviteId) as DeviceRow[];
     return rows.map(toDevice);
   }
 
-  async countActiveByUser(userId: number): Promise<number> {
+  async countActiveByInvite(inviteId: number): Promise<number> {
     const row = this.db
-      .prepare('SELECT COUNT(*) AS n FROM devices WHERE user_id = ? AND revoked_at IS NULL')
-      .get(userId) as { n: number };
+      .prepare('SELECT COUNT(*) AS n FROM devices WHERE invite_id = ? AND revoked_at IS NULL')
+      .get(inviteId) as { n: number };
     return row.n;
   }
 
@@ -574,68 +585,12 @@ class SqliteUsageRepository implements UsageRepository {
   }
 }
 
-class SqliteRefreshTokenRepository implements RefreshTokenRepository {
-  constructor(private readonly db: Db) {}
-
-  async create(input: {
-    userId: number;
-    tokenHash: string;
-    familyId: string;
-    expiresAt: string;
-  }): Promise<RefreshTokenRecord> {
-    const row = this.db
-      .prepare(
-        `INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at, created_at)
-         VALUES (@userId, @tokenHash, @familyId, @expiresAt, @createdAt)
-         RETURNING *`,
-      )
-      .get({ ...input, createdAt: nowIso() }) as RefreshTokenRow;
-    return toRefreshToken(row);
-  }
-
-  async findByHash(tokenHash: string): Promise<RefreshTokenRecord | null> {
-    const row = this.db
-      .prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?')
-      .get(tokenHash) as RefreshTokenRow | undefined;
-    return row ? toRefreshToken(row) : null;
-  }
-
-  async revoke(id: number, revokedAt: string): Promise<void> {
-    this.db
-      .prepare('UPDATE refresh_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-      .run(revokedAt, id);
-  }
-
-  async revokeFamily(familyId: string, revokedAt: string): Promise<void> {
-    this.db
-      .prepare('UPDATE refresh_tokens SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL')
-      .run(revokedAt, familyId);
-  }
-
-  async revokeAllForUser(userId: number, revokedAt: string): Promise<void> {
-    this.db
-      .prepare('UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
-      .run(revokedAt, userId);
-  }
-
-  async deleteStale(input: { expiredBefore: string; revokedBefore: string }): Promise<number> {
-    return this.db
-      .prepare(
-        `DELETE FROM refresh_tokens
-          WHERE expires_at < @expiredBefore
-             OR (revoked_at IS NOT NULL AND revoked_at < @revokedBefore)`,
-      )
-      .run(input).changes;
-  }
-}
-
 export function createSqliteRepositories(db: Db): Repositories {
   return {
-    users: new SqliteUserRepository(db),
+    invites: new SqliteInviteRepository(db),
     servers: new SqliteServerRepository(db),
     devices: new SqliteDeviceRepository(db),
     peers: new SqlitePeerRepository(db),
     usage: new SqliteUsageRepository(db),
-    refreshTokens: new SqliteRefreshTokenRepository(db),
   };
 }

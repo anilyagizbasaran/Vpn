@@ -1,9 +1,21 @@
-export interface User {
+/**
+ * Permission to enrol devices — what is replacing accounts.
+ *
+ * A credential and nothing else: no email, no password, no session. The
+ * operator mints one, hands it over, and revokes it to cut someone off. The
+ * part that matters is unchanged: an invite lets a device register its
+ * *public* key, and the private half never leaves the device.
+ */
+export interface Invite {
   id: number;
-  email: string;
-  passwordHash: string;
+  /** Free text, for the operator's own benefit: "phone", "Ali", "laptop". */
+  label: string;
+  /** HMAC of the token. The token is shown once and never stored. */
+  tokenHash: string;
+  deviceLimit: number;
   createdAt: string;
-  disabledAt: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
 }
 
 /**
@@ -44,15 +56,23 @@ export const SERVER_STATUSES = ['active', 'draining', 'offline'] as const;
 export type ServerStatus = (typeof SERVER_STATUSES)[number];
 
 /**
- * What a user manages and what the quota counts: one keypair, one entry in the
- * device list, however many servers it is bound to.
+ * What the quota counts: one keypair, one entry in the device list, however
+ * many servers it is bound to.
  */
 export interface Device {
   id: number;
-  userId: number;
+  /** The invite this device enrolled with. Revoking it takes the device too. */
+  inviteId: number;
   label: string;
   platform: string;
   publicKey: string;
+  /**
+   * HMAC of the token this device authenticates with, issued at enrolment.
+   *
+   * A device gets its own token rather than reusing the invite, so that one
+   * stolen phone cannot enrol more devices.
+   */
+  tokenHash: string;
   createdAt: string;
   /** Last time the device replaced its keypair; null if never rotated. */
   keyRotatedAt: string | null;
@@ -82,17 +102,6 @@ export interface PeerUsage {
   txBytes: number;
   lastHandshakeAt: string | null;
   updatedAt: string;
-}
-
-export interface RefreshTokenRecord {
-  id: number;
-  userId: number;
-  tokenHash: string;
-  /** All tokens rotated from one login share a family; reuse revokes it. */
-  familyId: string;
-  expiresAt: string;
-  createdAt: string;
-  revokedAt: string | null;
 }
 
 /**

@@ -52,3 +52,6 @@ apps/*/Directory.Build.targets
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Captured by CI when the Flutter tests fail.
+test.log

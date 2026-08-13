@@ -18,24 +18,15 @@ class VpnController extends ChangeNotifier {
     required DeviceRepository devices,
     required DeviceStore store,
     required Tunnel tunnel,
-    required String deviceLabel,
-    String devicePlatform = 'unknown',
     Duration keyRotationInterval = const Duration(days: 7),
   }) : _devices = devices,
        _store = store,
        _tunnel = tunnel,
-       _deviceLabel = deviceLabel,
-       _devicePlatform = devicePlatform,
        _keyRotationInterval = keyRotationInterval;
 
   final DeviceRepository _devices;
   final DeviceStore _store;
   final Tunnel _tunnel;
-
-  /// Supplied by the app, which is the only layer that knows what platform it
-  /// is running on. Keeps dart:io out of this package.
-  final String _deviceLabel;
-  final String _devicePlatform;
 
   /// How old a device key may get before it is replaced on the next connect.
   /// Rotation is what makes a leaked config expire on its own.
@@ -160,14 +151,18 @@ class VpnController extends ChangeNotifier {
 
     if (deviceId != null && privateKey != null) {
       try {
-        final config = await _devices.config(deviceId, serverId: _selectedServerId);
+        final config = await _devices.config(
+          deviceId,
+          serverId: _selectedServerId,
+        );
 
         // The server's idea of our key must match ours. A mismatch means a
         // rotation was interrupted or storage was restored from a backup —
         // the tunnel would silently never handshake, so re-key instead.
         final storedPublicKey = await _store.readPeerPublicKey();
         final keyIsOrphaned =
-            storedPublicKey != null && storedPublicKey != config.device.publicKey;
+            storedPublicKey != null &&
+            storedPublicKey != config.device.publicKey;
 
         if (keyIsOrphaned || await _keyIsStale()) {
           final rotated = await _rotateKey(deviceId);
@@ -185,7 +180,10 @@ class VpnController extends ChangeNotifier {
         }
 
         _device = config.device;
-        return (conf: config.resolveConf(privateKey), endpoint: config.endpoint);
+        return (
+          conf: config.resolveConf(privateKey),
+          endpoint: config.endpoint,
+        );
       } on ApiException catch (error) {
         // Revoked from another device, or the account was reset.
         if (error.statusCode != 404) rethrow;
@@ -193,44 +191,18 @@ class VpnController extends ChangeNotifier {
       }
     }
 
-    return _registerDevice();
-  }
-
-  Future<({String conf, String endpoint})> _registerDevice() async {
-    final pair = await WireGuardKeys.generate();
-    final created = await _devices.create(
-      label: _deviceLabel,
-      publicKey: pair.publicKey,
-      platform: _devicePlatform,
-    );
-
-    // Persist before anything else: the server has no copy to fall back on.
-    await _store.saveDevice(
-      peerId: created.device.id,
-      privateKey: pair.privateKey,
-      publicKey: pair.publicKey,
-    );
-    _device = created.device;
-
-    // Registration answers with the default region. If the user had already
-    // picked another one, fetch that instead of silently connecting elsewhere.
-    if (_selectedServerId != null && _selectedServerId != created.serverId) {
-      final chosen = await _devices.config(
-        created.device.id,
-        serverId: _selectedServerId,
-      );
-      return (
-        conf: chosen.resolveConf(pair.privateKey),
-        endpoint: chosen.endpoint,
-      );
-    }
-
-    return (
-      conf: created.conf.replaceFirst(
-        DeviceConfig.privateKeyPlaceholder,
-        pair.privateKey,
-      ),
-      endpoint: created.endpoint,
+    // Connecting no longer registers anything. A device comes into existence
+    // exactly once, at enrolment, and that already happened — reaching here
+    // means the stored key is gone while the device token still works, which
+    // no amount of retrying fixes.
+    //
+    // Registering here as well would mean two paths that have to agree about
+    // quotas, tokens and key ownership forever, and one of them silently
+    // burning a device slot every time a key went missing.
+    throw const ApiException(
+      message: 'This device needs to be set up again. Enter your invite code.',
+      code: 'not_enrolled',
+      statusCode: 401,
     );
   }
 
@@ -247,7 +219,10 @@ class VpnController extends ChangeNotifier {
   Future<({String conf, String endpoint})?> _rotateKey(int deviceId) async {
     try {
       final pair = await WireGuardKeys.generate();
-      final config = await _devices.rotateKey(deviceId, publicKey: pair.publicKey);
+      final config = await _devices.rotateKey(
+        deviceId,
+        publicKey: pair.publicKey,
+      );
 
       await _store.saveDevice(
         peerId: deviceId,
@@ -258,7 +233,10 @@ class VpnController extends ChangeNotifier {
 
       // Rotation answers with the default region; honour the user's choice.
       if (_selectedServerId != null && _selectedServerId != config.serverId) {
-        final chosen = await _devices.config(deviceId, serverId: _selectedServerId);
+        final chosen = await _devices.config(
+          deviceId,
+          serverId: _selectedServerId,
+        );
         return (
           conf: chosen.resolveConf(pair.privateKey),
           endpoint: chosen.endpoint,

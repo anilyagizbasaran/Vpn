@@ -35,13 +35,15 @@ class FakeHttpClient extends http.BaseClient {
     int status = 200,
     Map<String, dynamic>? body,
   }) {
-    _queued.putIfAbsent('$method $path', () => []).add(
-      http.Response(
-        body == null ? '' : jsonEncode(body),
-        status,
-        headers: {'content-type': 'application/json'},
-      ),
-    );
+    _queued
+        .putIfAbsent('$method $path', () => [])
+        .add(
+          http.Response(
+            body == null ? '' : jsonEncode(body),
+            status,
+            headers: {'content-type': 'application/json'},
+          ),
+        );
   }
 
   int callCount(String method, String path) =>
@@ -64,7 +66,10 @@ class FakeHttpClient extends http.BaseClient {
     final key = '${request.method} ${request.url.path}';
     final queue = _queued[key];
     final response = (queue == null || queue.isEmpty)
-        ? http.Response('{"error":{"code":"not_stubbed","message":"$key"}}', 500)
+        ? http.Response(
+            '{"error":{"code":"not_stubbed","message":"$key"}}',
+            500,
+          )
         : queue.removeAt(0);
 
     return http.StreamedResponse(

@@ -1,6 +1,6 @@
 # Build context for website/Dockerfile is the repository root, so the same
 # exclusions the server context needs apply here — plus the parts of the
-# workspace the dashboard build has no use for.
+# workspace the image build has no use for.
 .git
 **/node_modules
 **/.dart_tool

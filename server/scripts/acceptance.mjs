@@ -8,13 +8,12 @@
  * the things that are fine on a laptop and broken on a VPS.
  *
  * It needs an invite code, because that is now the only way in. Mint a
- * throwaway one first — `npm run invite -- --label acceptance --devices 10`
- * — and revoke it afterwards. Every device the run enrols removes itself at
- * the end, so it is safe against production, though it does consume peer
+ * one with `vpn status`. Every device the run enrols removes itself at the
+ * end, so it is safe against production, though it does consume peer
  * addresses while it runs.
  *
- *   node scripts/acceptance.mjs https://api.example.com vpninv_...
- *   node scripts/acceptance.mjs https://api.example.com vpninv_... --check-wg
+ *   node scripts/acceptance.mjs https://api.example.com AB12CD34EF
+ *   node scripts/acceptance.mjs https://api.example.com AB12CD34EF --check-wg
  *
  * --check-wg     also watch `wg show` locally, proving the node agent applies
  *                what the API hands out. Only valid on a machine that is both
@@ -29,11 +28,11 @@ const baseUrl = (process.argv[2] ?? '').replace(/\/+$/, '');
 const inviteToken = process.argv[3] ?? '';
 const flags = new Set(process.argv.slice(4));
 
-if (!baseUrl || !inviteToken.startsWith('vpninv_')) {
+if (!baseUrl || inviteToken.length < 8) {
   console.error(
-    'usage: node scripts/acceptance.mjs <base-url> <vpninv_...> [--check-wg] [--rate-limits]',
+    'usage: node scripts/acceptance.mjs <base-url> <invite-code> [--check-wg] [--rate-limits]',
   );
-  console.error('mint one with: npm run invite -- --label acceptance --devices 10');
+  console.error('see the code with: vpn status  (or vpn reset for a fresh one)');
   process.exit(2);
 }
 
@@ -259,7 +258,7 @@ async function main() {
 
   await check('a wrong invite code is refused', async () => {
     await call('POST', '/enroll', {
-      body: { inviteToken: 'vpninv_not-a-real-code', publicKey: clientKeypair().publicKey },
+      body: { inviteToken: 'ZZZZZZZZZZ', publicKey: clientKeypair().publicKey },
       expect: 401,
     });
   });
@@ -399,41 +398,20 @@ async function main() {
     assert(!body.conf.includes(device.publicKey), 'the config carries another device key');
   });
 
-  await check('the device limit is enforced', async () => {
-    let created = enrolled.length;
-    let limit = null;
-
-    for (let i = 0; i < 20; i += 1) {
-      const response = await call('POST', '/enroll', {
-        body: { inviteToken, publicKey: clientKeypair().publicKey, label: `filler-${i}` },
-      });
-      if (response.status === 201) {
-        created += 1;
-        enrolled.push({ token: response.body.deviceToken, id: response.body.device.id });
-        continue;
-      }
-      assertEqual(response.status, 409, 'status once the limit is reached');
-      assertEqual(response.body?.error?.code, 'peer_quota_exceeded', 'error.code');
-      limit = response.body?.error?.details?.limit ?? created;
-      break;
-    }
-
-    assert(
-      limit !== null,
-      `the limit was never reached after ${created} devices — mint the invite with a smaller --devices`,
-    );
-    assertEqual(created, limit, 'devices created before the limit fired');
-  });
-
-  await check('a device removing itself frees a slot', async () => {
+  await check('a device removing itself frees its address', async () => {
     const victim = enrolled.pop();
+    const address = victim.locations[0].allowedIp;
     await call('DELETE', '/device', { token: victim.token, expect: 204 });
 
     // Its own token is dead the moment it is gone.
     await call('GET', '/device', { token: victim.token, expect: 401 });
 
+    // There is no device quota — the address pool is what bounds enrolment —
+    // so the thing worth checking is that a removed device gives its address
+    // back rather than leaving a hole in the pool.
     const replacement = await enrol('replacement');
     assert(replacement.id !== victim.id, 'the replacement reused the removed id');
+    assertEqual(replacement.locations[0].allowedIp, address, 'the freed address');
   });
 
   group('Input handling');
@@ -475,7 +453,7 @@ async function main() {
       let throttled = false;
       for (let i = 0; i < 40; i += 1) {
         const response = await call('POST', '/enroll', {
-          body: { inviteToken: 'vpninv_wrong', publicKey: clientKeypair().publicKey },
+          body: { inviteToken: 'ZZZZZZZZZZ', publicKey: clientKeypair().publicKey },
         });
         if (response.status === 429) {
           throttled = true;
@@ -527,7 +505,7 @@ if (failures.length > 0) {
     console.log(`    ${failure.message}`);
   }
   console.log(
-    `\n${c.yellow('Devices may be left behind. Revoke the invite to cut them all off at once.')}`,
+    `\n${c.yellow('Devices may be left behind. `vpn reset --kick` removes all of them.')}`,
   );
 }
 

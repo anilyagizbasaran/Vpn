@@ -10,12 +10,16 @@ import 'dart:io';
 class AppConfig {
   const AppConfig._();
 
-  /// `10.0.2.2` is the host machine as seen from the Android emulator.
-  /// Use `http://localhost:3000` for the iOS simulator and desktop.
-  static const String apiBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:3000',
-  );
+  /// Empty by default, and that is deliberate.
+  ///
+  /// Everyone who runs this has their own server, so a released build with an
+  /// address compiled in would ship pointing at somebody else's. The app asks
+  /// on first launch instead.
+  ///
+  /// Still overridable for development — `--dart-define=API_BASE_URL=
+  /// http://10.0.2.2:3000` is the Android emulator's view of the host machine
+  /// — and for an organisation packaging this for its own people.
+  static const String apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 
   /// Name of the tunnel interface created on the device.
   static const String interfaceName = 'wg0';

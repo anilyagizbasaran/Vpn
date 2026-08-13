@@ -19,13 +19,29 @@ import type {
  */
 
 export interface InviteRepository {
-  create(input: { label: string; tokenHash: string; deviceLimit: number }): Promise<Invite>;
+  /** `deviceLimit` null means no cap; the address pool is the only bound. */
+  create(input: {
+    label: string;
+    tokenHash: string;
+    deviceLimit: number | null;
+  }): Promise<Invite>;
   findById(id: number): Promise<Invite | null>;
   /** The lookup enrolment does, so it is indexed and exact. */
   findByTokenHash(tokenHash: string): Promise<Invite | null>;
   list(): Promise<Invite[]>;
   touch(id: number, usedAt: string): Promise<void>;
-  /** Revoking takes the devices enrolled with it, via ON DELETE CASCADE. */
+  /**
+   * Replaces the secret without touching the invite's identity, so the devices
+   * already enrolled with it keep working. This is rotation: the old code stops
+   * enrolling anything new, and nobody has to set their phone up again.
+   */
+  rotateToken(id: number, tokenHash: string): Promise<Invite | null>;
+  /**
+   * Marks the invite dead. On its own this stops further enrolment and nothing
+   * else — the devices already enrolled keep their own tokens and stay on the
+   * interface. Cutting them off is [DeviceService.revokeAllForInvite], and the
+   * two go together wherever "revoke" is offered to an operator.
+   */
   revoke(id: number, revokedAt: string): Promise<boolean>;
   delete(id: number): Promise<boolean>;
 }

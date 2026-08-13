@@ -247,6 +247,29 @@ jobs:
             node --input-type=module -e "$(cat "$f")" 2>&1 | grep -q SyntaxError && { echo "::error::$f has a syntax error"; exit 1; }
             echo "ok $f"
           done
+
+      # The popup talks to the service worker by name. A message the worker has
+      # no case for falls through the switch and answers nothing, which the
+      # popup shows as a button that does not work — no error, nothing in a
+      # console, and both files parse fine. That is exactly how the enrol
+      # button shipped broken once.
+      - name: Every message the popup sends has a handler
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          popup = open('extension/popup.js').read()
+          worker = open('extension/background.js').read()
+
+          sent = set(re.findall(r"type:\s*'([a-z-]+)'", popup))
+          handled = set(re.findall(r"case\s*'([a-z-]+)'", worker))
+
+          missing = sorted(sent - handled)
+          if missing:
+              for name in missing:
+                  print(f"::error::popup.js sends '{name}' but background.js has no case for it")
+              sys.exit(1)
+          print(f'{len(sent)} message types, all handled')
+          PY
       - name: Refuse unreplaced placeholders in a release build
         if: github.ref == 'refs/heads/main'
         run: |

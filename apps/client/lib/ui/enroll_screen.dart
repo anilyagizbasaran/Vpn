@@ -19,16 +19,40 @@ class EnrollScreen extends StatefulWidget {
 class _EnrollScreenState extends State<EnrollScreen> {
   final _formKey = GlobalKey<FormState>();
   final _codeController = TextEditingController();
+  final _addressController = TextEditingController();
+
+  /// Set when the address is rejected, so the message lands under the field
+  /// that caused it rather than in the banner enrolment errors use.
+  String? _addressError;
+
+  @override
+  void initState() {
+    super.initState();
+    _addressController.text = context.read<VpnServerAddress>().current;
+  }
 
   @override
   void dispose() {
     _codeController.dispose();
+    _addressController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
+    setState(() => _addressError = null);
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
+    // The address moves first. A code means nothing against the wrong server,
+    // and enrolling before the address changed would spend it on whatever the
+    // app happened to be pointing at.
+    try {
+      await context.read<VpnServerAddress>().change(_addressController.text);
+    } on ServerAddressError catch (error) {
+      setState(() => _addressError = error.message);
+      return;
+    }
+
+    if (!mounted) return;
     await context.read<EnrollController>().enrol(
       inviteToken: _codeController.text,
       label: AppConfig.deviceLabel,
@@ -69,7 +93,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Enter the invite code from whoever runs your server.',
+                      'Enter your server address and the code it printed.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
@@ -85,16 +109,39 @@ class _EnrollScreenState extends State<EnrollScreen> {
                       const SizedBox(height: 16),
                     ],
 
+                    // Asked for, not assumed: everyone who runs this has their
+                    // own server, so there is no address worth compiling in.
+                    // See AppConfig.apiBaseUrl.
+                    TextFormField(
+                      controller: _addressController,
+                      enabled: !enrol.isBusy,
+                      autocorrect: false,
+                      autofocus: !address.isConfigured,
+                      keyboardType: TextInputType.url,
+                      textInputAction: TextInputAction.next,
+                      decoration: InputDecoration(
+                        labelText: 'Server address',
+                        hintText: 'https://vpn.example.com',
+                        prefixIcon: const Icon(Icons.dns_outlined),
+                        border: const OutlineInputBorder(),
+                        errorText: _addressError,
+                      ),
+                      validator: (value) => (value ?? '').trim().isEmpty
+                          ? 'Enter the address your server printed'
+                          : null,
+                    ),
+                    const SizedBox(height: 16),
+
                     TextFormField(
                       controller: _codeController,
                       enabled: !enrol.isBusy,
                       autocorrect: false,
-                      autofocus: true,
+                      autofocus: address.isConfigured,
                       textInputAction: TextInputAction.done,
                       onFieldSubmitted: (_) => _submit(),
                       decoration: const InputDecoration(
                         labelText: 'Invite code',
-                        hintText: 'vpninv_…',
+                        hintText: 'ABCD123456',
                         prefixIcon: Icon(Icons.vpn_key_outlined),
                         border: OutlineInputBorder(),
                       ),
@@ -118,48 +165,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
                           : const Text('Connect this device'),
                     ),
 
-                    const Divider(height: 40),
-
-                    // Shown rather than hidden behind a menu: an invite code is
-                    // useless against the wrong server, and "it says the code
-                    // is invalid" is almost always this.
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.dns_outlined,
-                          size: 16,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Server',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                              Text(
-                                address.current,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall,
-                              ),
-                            ],
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: enrol.isBusy
-                              ? null
-                              : () => _editAddress(context, address),
-                          child: const Text('Change'),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 24),
                     Text(
                       'Your key is generated here and never leaves this device. '
                       'The server only ever sees its public half.',
@@ -176,52 +182,5 @@ class _EnrollScreenState extends State<EnrollScreen> {
         ),
       ),
     );
-  }
-
-  Future<void> _editAddress(
-    BuildContext context,
-    VpnServerAddress address,
-  ) async {
-    final controller = TextEditingController(text: address.current);
-    final entered = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Server address'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.url,
-          autocorrect: false,
-          decoration: const InputDecoration(
-            hintText: 'https://vpn.example.com',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (value) => Navigator.pop(dialogContext, value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-
-    controller.dispose();
-    if (entered == null || !context.mounted) return;
-
-    try {
-      await address.change(entered);
-    } on ServerAddressError catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(error.message)));
-      }
-    }
   }
 }

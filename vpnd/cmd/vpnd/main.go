@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"vpnd/internal/enroll"
 	"vpnd/internal/ipc"
 	"vpnd/internal/tunnel"
 )
@@ -88,6 +89,10 @@ func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir str
 
 	manager := tunnel.NewManager(driver, iface, log)
 
+	// Where the device identity lives. Beside the tunnel config on purpose:
+	// one directory to lock down, and the mock driver writes to neither.
+	identity := enroll.NewStore(configDir)
+
 	listener, err := ipc.Listen(socketPath)
 	if err != nil {
 		return err
@@ -101,7 +106,7 @@ func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir str
 		"version", ipc.Version)
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- ipc.NewServer(manager, log).Serve(ctx, listener) }()
+	go func() { serveErr <- ipc.NewServer(manager, identity, log).Serve(ctx, listener) }()
 
 	select {
 	case err := <-serveErr:

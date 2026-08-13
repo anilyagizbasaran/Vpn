@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"time"
 
 	"vpnd/internal/ipc"
@@ -34,12 +35,20 @@ const maxIncoming = 1024 * 1024
 
 type request struct {
 	Action string `json:"action"`
+	// Only `enroll` uses these. They are what the user typed into the popup:
+	// where their server is, and the code that lets this machine on.
+	ServerAddress string `json:"serverAddress,omitempty"`
+	InviteToken   string `json:"inviteToken,omitempty"`
 }
 
 type reply struct {
 	OK    bool   `json:"ok"`
 	Stage string `json:"stage,omitempty"`
 	Error string `json:"error,omitempty"`
+	// Whether this machine has a device identity. The extension shows its
+	// setup form on this rather than on a failed connect, so a first run does
+	// not start with an error message.
+	Enrolled bool `json:"enrolled"`
 }
 
 func main() {
@@ -95,7 +104,21 @@ func handle(req request, socketPath string) reply {
 	encoder := protocol.NewEncoder(conn)
 	decoder := protocol.NewDecoder(conn)
 
-	if err := encoder.Encode(protocol.Request{ID: 1, Method: method}); err != nil {
+	outgoing := protocol.Request{ID: 1, Method: method}
+	if method == protocol.MethodEnroll {
+		params, err := json.Marshal(protocol.EnrollParams{
+			ServerAddress: req.ServerAddress,
+			InviteToken:   req.InviteToken,
+			Label:         "Browser extension",
+			Platform:      hostPlatform(),
+		})
+		if err != nil {
+			return reply{Error: "The enrolment request could not be encoded."}
+		}
+		outgoing.Params = params
+	}
+
+	if err := encoder.Encode(outgoing); err != nil {
 		return reply{Error: "The VPN service could not be reached."}
 	}
 
@@ -113,11 +136,17 @@ func handle(req request, socketPath string) reply {
 
 	var status protocol.StatusResult
 	_ = json.Unmarshal(response.Result, &status)
-	return reply{OK: true, Stage: string(status.Stage)}
+	return reply{OK: true, Stage: string(status.Stage), Enrolled: status.Enrolled}
 }
 
 // methodFor is an allowlist, not a pass-through. `up` is absent on purpose:
-// it takes a config containing a private key.
+// it takes a config containing a private key, and this process exists so the
+// extension never handles one.
+//
+// `enroll` is here even though it sets the machine up, because it moves in the
+// safe direction: an address and a code go in, a stage comes back. The daemon
+// generates the keypair and keeps it. Nothing key-shaped crosses this pipe in
+// either direction.
 func methodFor(action string) (string, bool) {
 	switch action {
 	case "status":
@@ -126,8 +155,25 @@ func methodFor(action string) (string, bool) {
 		return protocol.MethodReconnect, true
 	case "disconnect":
 		return protocol.MethodDown, true
+	case "enroll":
+		return protocol.MethodEnroll, true
 	default:
 		return "", false
+	}
+}
+
+// hostPlatform labels the device in the operator's device list. Best effort:
+// a wrong label is cosmetic, and it is never used for a decision.
+func hostPlatform() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "windows"
+	case "darwin":
+		return "macos"
+	case "linux":
+		return "linux"
+	default:
+		return "unknown"
 	}
 }
 

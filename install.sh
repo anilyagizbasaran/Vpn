@@ -286,20 +286,39 @@ for _ in $(seq 1 30); do
 done
 [ "${AGENT_OK:-0}" = "1" ] && ok "agent syncing" || info "the agent has not reported yet; it keeps retrying"
 
-# --- first invite -------------------------------------------------------------
+# --- the vpn command ----------------------------------------------------------
 
-step "Creating your first invite code"
-info "this is what the app asks for; there is no account to make"
+step "Installing the vpn command"
 
-# Same trick as the node token: the structured logger shares stdout, so the
-# code is picked out by its prefix rather than by trusting the whole stream.
-INVITE="$(docker compose exec -T api node scripts/invite.mjs   --label "first" --devices 5 --token-only 2>/dev/null |
-  grep -oE 'vpninv_[A-Za-z0-9_-]+' | head -1)"
+# A wrapper rather than an alias, so it works from cron, from another user's
+# shell, and from a session that never sourced a profile. It cds itself: the
+# compose file is the only thing that says where anything lives.
+cat > /usr/local/bin/vpn <<VPNEOF
+#!/bin/sh
+# Manage this VPN server. Installed by install.sh; safe to re-run.
+set -e
+cd "$INSTALL_DIR"
+exec docker compose exec -T api node scripts/vpn.mjs "\$@"
+VPNEOF
+chmod 755 /usr/local/bin/vpn
+ok "vpn status · vpn devices · vpn revoke <id> · vpn reset"
 
-case "$INVITE" in
-  vpninv_*) ok "invite created" ;;
-  *) INVITE=""; info "could not create one automatically; run 'npm run invite' yourself" ;;
-esac
+# --- first code ---------------------------------------------------------------
+
+step "Creating your invite code"
+info "one code; every device you own uses it"
+
+# `vpn status` mints one on first run and prints it. The structured logger
+# shares stdout, so the code is picked out by shape rather than by trusting the
+# whole stream: ten characters from Crockford's base32, alone on a line.
+CODE="$(/usr/local/bin/vpn status 2>/dev/null |
+  grep -oE '\b[0-9A-HJKMNP-TV-Z]{10}\b' | head -1)"
+
+if [ -n "$CODE" ]; then
+  ok "code created"
+else
+  info "could not read it back; run 'vpn reset' to see one"
+fi
 
 # --- done --------------------------------------------------------------------
 
@@ -311,15 +330,20 @@ ${BOLD}Your VPN server is running.${RESET}
 
       ${BOLD}https://$DOMAIN${RESET}
 
-  ...and this invite code:
+  ...and this code:
 
-      ${BOLD}${INVITE:-run: docker compose exec api node scripts/invite.mjs --label me}${RESET}
+      ${BOLD}${CODE:-run: vpn reset}${RESET}
 
-  That is the whole setup. The code is good for 5 devices; the app generates
-  its own key and the private half never reaches this server.
+  That is the whole setup. The same code works on every device you own — phone,
+  desktop app, browser extension — and each one generates its own key, so the
+  private half never reaches this server.
 
-  More codes, or to cut someone off:
-      cd $INSTALL_DIR && docker compose exec api node scripts/invite.mjs --list
+  Managing it, from this machine:
+      ${BOLD}vpn status${RESET}          is a code set, and how many devices are on it
+      ${BOLD}vpn devices${RESET}         one line per device
+      ${BOLD}vpn revoke <id>${RESET}     cut off one device
+      ${BOLD}vpn reset${RESET}           new code, devices stay connected
+      ${BOLD}vpn reset --kick${RESET}    new code and remove every device
 
   Installed at:   $INSTALL_DIR
   Update later:   curl -fsSL $REPO_URL/raw/main/install.sh | sudo bash

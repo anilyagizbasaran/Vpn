@@ -12,11 +12,16 @@ class ServerAddressError implements Exception {
   String toString() => message;
 }
 
-/// The address of the control plane, changeable at runtime.
+/// The address of the control plane, entered by whoever runs the server.
 ///
-/// A self-hosted deployment moves — a new VPS, a new address — and the answer
-/// to that cannot be "rebuild and reinstall every client". The build-time
-/// value stays the default; this remembers an override.
+/// Normally there is no compiled-in default at all, and [isConfigured] is
+/// false until someone types one in. That is the honest shape for software
+/// where every user has their own server: a released build that pointed at
+/// one address would point at somebody else's, and the first thing every
+/// other user did would be to change it.
+///
+/// A build-time value is still supported, for an organisation packaging this
+/// for its own people. When set it becomes the default and [reset] restores it.
 ///
 /// Changing it is deliberately restricted to being signed out. Access tokens
 /// are issued by one control plane and the registered device exists in one
@@ -47,10 +52,15 @@ class VpnServerAddress extends ChangeNotifier {
 
   bool get isOverridden => _current != _default;
 
+  /// Whether an address is known at all. False on a fresh install of a build
+  /// with no compiled-in default — the app has to ask before it can do
+  /// anything, and there is nothing useful to show until it does.
+  bool get isConfigured => _current.isNotEmpty;
+
   static String normalise(String value) =>
       value.trim().replaceAll(RegExp(r'/+$'), '');
 
-  /// Reads any stored override and applies it. Call before the first request.
+  /// Reads any stored address and applies it. Call before the first request.
   Future<void> load() async {
     final stored = await _store.readServerUrl();
     if (stored == null || stored.isEmpty) return;
@@ -66,7 +76,12 @@ class VpnServerAddress extends ChangeNotifier {
     validate(next);
     if (next == _current) return;
 
-    await _store.writeServerUrl(next == _default ? null : next);
+    // Stored even when it equals the default, unless the default is real: with
+    // no compiled-in default there is nothing to fall back to, and writing
+    // null would make the next launch ask again.
+    await _store.writeServerUrl(
+      _default.isNotEmpty && next == _default ? null : next,
+    );
     // Before the address moves, so a failure here cannot leave the app
     // pointing at a new server while still holding the old one's device.
     await _store.clearDevice();
@@ -94,19 +109,19 @@ class VpnServerAddress extends ChangeNotifier {
 
     if (uri.scheme == 'https') return;
 
-    // http is rejected rather than warned about: every request carries the
-    // password on sign-in and the access token afterwards, and a warning is
-    // not what stops those crossing the network in the clear. Loopback is the
-    // exception, because a debug build talking to a laptop has no network to
-    // cross.
+    // http is rejected rather than warned about: enrolment carries the invite
+    // code and every request afterwards carries the device token, and a
+    // warning is not what stops those crossing the network in the clear.
+    // Loopback is the exception, because a debug build talking to a laptop has
+    // no network to cross.
     const loopback = {'localhost', '127.0.0.1', '::1', '10.0.2.2'};
     if (uri.scheme == 'http' && kDebugMode && loopback.contains(uri.host)) {
       return;
     }
 
     throw const ServerAddressError(
-      'The address must start with https:// — http would send your password '
-      'in the clear',
+      'The address must start with https:// — http would send your invite '
+      'code in the clear',
     );
   }
 }

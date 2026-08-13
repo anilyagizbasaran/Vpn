@@ -326,6 +326,45 @@ export const MIGRATIONS: Migration[] = [
       DROP TABLE users;
     `,
   },
+  {
+    version: 7,
+    name: 'let an invite carry no device limit',
+    up: `
+      -- The quota was inherited from the account era, where it existed to stop
+      -- one subscription being shared with a street. On a server its owner
+      -- runs, it mostly fired at the wrong moment: reinstall a laptop and the
+      -- slot stays taken, because only the device itself could give it back.
+      --
+      -- NULL now means no cap. What actually bounds enrolment is the address
+      -- pool — a /24 is 253 devices — and what bounds a leaked code is being
+      -- able to rotate it in one command.
+      CREATE TABLE invites_v7 (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        label        TEXT    NOT NULL,
+        token_hash   TEXT    NOT NULL UNIQUE,
+        device_limit INTEGER,
+        created_at   TEXT    NOT NULL,
+        last_used_at TEXT,
+        revoked_at   TEXT
+      );
+
+      -- Existing invites keep the cap they were minted with; changing somebody
+      -- else's limit is not this migration's business.
+      INSERT INTO invites_v7 (id, label, token_hash, device_limit,
+                              created_at, last_used_at, revoked_at)
+        SELECT id, label, token_hash, device_limit,
+               created_at, last_used_at, revoked_at
+          FROM invites;
+
+      DROP TABLE invites;
+      ALTER TABLE invites_v7 RENAME TO invites;
+
+      -- devices is untouched: its rows keep their invite_id, the same ids go
+      -- back into the rebuilt table, and foreign_key_check at the end of the
+      -- run is what proves the references still resolve. Its indexes belong to
+      -- that table and survive too, so there is nothing to recreate here.
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

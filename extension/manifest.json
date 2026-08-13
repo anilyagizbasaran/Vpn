@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VPN Client",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Shows your VPN status, turns the tunnel on or off, and closes the leaks a tunnel cannot close by itself.",
   "minimum_chrome_version": "116",
 

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 
+	"vpnd/internal/enroll"
 	"vpnd/internal/protocol"
 	"vpnd/internal/tunnel"
 )
@@ -19,12 +20,32 @@ var Version = "dev"
 
 // Server answers requests from the GUI on a local socket.
 type Server struct {
-	manager *tunnel.Manager
-	log     *slog.Logger
+	manager  *tunnel.Manager
+	identity *enroll.Store
+	log      *slog.Logger
+
+	// Swapped in tests. Everywhere else it builds a real HTTP client.
+	newClient func(baseURL string) enroller
 }
 
-func NewServer(manager *tunnel.Manager, log *slog.Logger) *Server {
-	return &Server{manager: manager, log: log}
+// enroller is the slice of [enroll.Client] this package uses, named as an
+// interface so a test can answer without a network or a certificate.
+type enroller interface {
+	Enrol(ctx context.Context, inviteToken, label, platform string) (enroll.Result, error)
+	FetchConfig(ctx context.Context, deviceToken string, keys enroll.Keys) (enroll.Result, error)
+}
+
+// NewServer wires the daemon's request handling.
+//
+// identity may be nil, which disables enrolment and leaves the daemon a pure
+// tunnel driver — what `-mock` wants, and what the GUI-only arrangement was.
+func NewServer(manager *tunnel.Manager, identity *enroll.Store, log *slog.Logger) *Server {
+	return &Server{
+		manager:   manager,
+		identity:  identity,
+		log:       log,
+		newClient: func(baseURL string) enroller { return enroll.New(baseURL) },
+	}
 }
 
 // Serve accepts connections until ctx is cancelled or the listener closes.
@@ -103,7 +124,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			}
 			events, cancelSub := s.manager.Subscribe()
 			unsubscribe = cancelSub
-			s.reply(writer, request.ID, s.manager.Status(), nil)
+			s.reply(writer, request.ID, s.status(), nil)
 			go s.pump(ctx, writer, events)
 			continue
 		}
@@ -141,7 +162,7 @@ func (s *Server) dispatch(ctx context.Context, request protocol.Request) (any, *
 		}, nil
 
 	case protocol.MethodStatus:
-		return s.manager.Status(), nil
+		return s.status(), nil
 
 	case protocol.MethodUp:
 		var params protocol.UpParams
@@ -176,21 +197,34 @@ func (s *Server) dispatch(ctx context.Context, request protocol.Request) (any, *
 		if err := s.manager.Up(ctx, config, params.ServerAddress); err != nil {
 			return nil, asProtocolError(err)
 		}
-		return s.manager.Status(), nil
+		return s.status(), nil
+
+	case protocol.MethodEnroll:
+		var params protocol.EnrollParams
+		if err := json.Unmarshal(request.Params, &params); err != nil {
+			return nil, &protocol.Error{
+				Code:    protocol.CodeBadRequest,
+				Message: "The enrolment request was malformed.",
+			}
+		}
+		return s.enrol(ctx, params)
 
 	case protocol.MethodReconnect:
-		// No config in the request: the caller has no account and cannot
-		// produce one. The daemon reuses what it already accepted.
-		if err := s.manager.Reconnect(ctx); err != nil {
+		// No config in the request: the caller cannot produce one. The daemon
+		// reuses what it already accepted, and failing that, asks the control
+		// plane it enrolled with for a fresh copy.
+		if err := s.manager.Reconnect(ctx); err == nil {
+			return s.status(), nil
+		} else if !s.canRefetch() {
 			return nil, asProtocolError(err)
 		}
-		return s.manager.Status(), nil
+		return s.reconnectFromIdentity(ctx)
 
 	case protocol.MethodDown:
 		if err := s.manager.Down(ctx); err != nil {
 			return nil, asProtocolError(err)
 		}
-		return s.manager.Status(), nil
+		return s.status(), nil
 
 	default:
 		return nil, &protocol.Error{

@@ -12,7 +12,7 @@ Compromising any one component should not be enough.
 | Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Private keys. It never touches WireGuard |
 | Node agent (`vpn-node-agent`) | How to change the interface | Any token, or another node's peers |
 | Client (`apps/client`) | Its device token, **the private key** | It cannot touch the network interface (on desktop) |
-| Desktop service (`vpnd`) | How to bring a local tunnel up | The device token — it never calls the API |
+| Desktop service (`vpnd`) | How to bring a tunnel up, and — on desktop — the device token and **the private key** | Anything but the one control plane it was pointed at |
 | Extension (`extension/`) | Whether the tunnel is up | It cannot see or produce a config |
 
 What follows from that:
@@ -23,8 +23,12 @@ What follows from that:
   out.
 - If a node is taken, other nodes are safe; the node token only sees that node's
   own peer set.
-- If `vpnd` is taken you do not get the device token; if the GUI is taken you do not
-  get root.
+- If `vpnd` is taken you do get that machine's device token and key, which is
+  the cost of letting the extension set a machine up without holding one. It
+  buys nothing beyond that machine, and revoking the device ends it.
+- If the extension is taken you get a status and a toggle. It holds no
+  credential, which is why enrolment lives in the daemon.
+- If the GUI is taken you do not get root.
 
 The cost is plain: **lose the private key and the device cannot be recovered.**
 There is no copy on the server. The app deals with it by revoking the device

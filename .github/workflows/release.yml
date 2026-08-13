@@ -18,22 +18,6 @@ permissions:
   contents: write
 
 jobs:
-  # API_BASE_URL is baked into the client at build time. Unset, the builds
-  # still succeed and ship pointing nowhere — which reaches the user as
-  # "connecting…" and nothing else. Failing here costs one job and says what
-  # is actually wrong.
-  preflight:
-    name: Preflight
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require API_BASE_URL
-        run: |
-          if [ -z "${{ vars.API_BASE_URL }}" ]; then
-            echo "::error::Repository variable API_BASE_URL is not set."
-            echo "Settings > Secrets and variables > Actions > Variables."
-            exit 1
-          fi
-
   daemon:
     name: vpnd (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -82,7 +66,6 @@ jobs:
 
   android:
     name: Android APK
-    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,14 +74,23 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { channel: stable, cache: true }
       - run: dart pub get
+      # No --dart-define=API_BASE_URL. Everyone who runs this has their own
+      # server, so a release with an address compiled in would ship pointing at
+      # somebody else's; the app asks on first launch instead.
       - name: Build
         working-directory: apps/client
-        # The API URL is baked in at build time, so a release build must be
-        # told where the control plane lives or it ships pointing at an
-        # emulator loopback address.
+        shell: bash
         run: |
-          flutter build apk --release \
-            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
+          set +e
+          flutter build apk --release > build.log 2>&1
+          status=$?
+          set -e
+          cat build.log
+          if [ "$status" -ne 0 ]; then
+            details=$(grep -iE "error|failed|exception" build.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Android build failed::${details}"
+          fi
+          exit "$status"
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
@@ -106,9 +98,11 @@ jobs:
 
   desktop:
     name: Desktop GUI (${{ matrix.os }})
-    needs: preflight
     runs-on: ${{ matrix.os }}
     strategy:
+      # Without this, the first platform to fail cancels the other two, and one
+      # Linux problem reads as "Windows and macOS are broken as well".
+      fail-fast: false
       matrix:
         # `target` names the artifact after what a user is downloading rather
         # than after the runner image: vpn-client-windows-x64.tar.gz, not
@@ -129,11 +123,25 @@ jobs:
           sudo apt-get install -y ninja-build libgtk-3-dev libsecret-1-dev
 
       - run: dart pub get
+
+      # The failure has to name itself on the summary page. Reading it out of
+      # the log needs a token the repository owner may not have to hand, and a
+      # release that breaks should still say what broke.
       - name: Build
         working-directory: apps/client
+        shell: bash
         run: |
+          set +e
           flutter build ${{ runner.os == 'Windows' && 'windows' || runner.os == 'macOS' && 'macos' || 'linux' }} \
-            --release --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }}
+            --release > build.log 2>&1
+          status=$?
+          set -e
+          cat build.log
+          if [ "$status" -ne 0 ]; then
+            details=$(grep -iE "error|failed|exception" build.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=${{ matrix.target }} build failed::${details}"
+          fi
+          exit "$status"
 
       # Flutter puts each desktop target somewhere different, and only the
       # Windows one looks like `<platform>/x64/runner/Release`.
@@ -151,7 +159,15 @@ jobs:
             macOS)   src=build/macos/Build/Products/Release ;;
             *)       src=build/linux/x64/release/bundle ;;
           esac
-          [ -d "$src" ] || { echo "::error::no build output at $src"; exit 1; }
+          if [ ! -d "$src" ]; then
+            # The build reported success, so the output exists somewhere else.
+            # Printing the tree turns "no build output" into an answer rather
+            # than another round trip.
+            listing=$(find build -maxdepth 4 -type d 2>/dev/null | head -40 |
+                      awk '{printf "%s%%0A", $0}')
+            echo "::error title=${{ matrix.target }}: no output at $src::${listing}"
+            exit 1
+          fi
           tar -czf "vpn-client-${{ matrix.target }}.tar.gz" -C "$src" .
 
       - uses: actions/upload-artifact@v4
@@ -164,7 +180,10 @@ jobs:
     name: Draft the release
     needs: [daemon, android, desktop]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # Drafts with whatever built. A platform that failed simply has no asset,
+    # which is better than withholding the three that worked — the draft is
+    # reviewed by a human before it is published anyway.
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.daemon.result == 'success'
     steps:
       - uses: actions/download-artifact@v4
         with: { path: artifacts }

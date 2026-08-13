@@ -57,3 +57,19 @@ func (d *MockDriver) IsUp() bool {
 	defer d.mu.Unlock()
 	return d.Up_
 }
+
+// Config is the last config installed. Read through the mutex because the
+// daemon writes it from its own goroutine, which -race is right to complain
+// about when a test reads the field directly.
+func (d *MockDriver) Config() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.LastConfig
+}
+
+// Calls is how many times the tunnel was brought up.
+func (d *MockDriver) Calls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.UpCalls
+}

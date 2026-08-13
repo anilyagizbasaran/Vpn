@@ -22,10 +22,20 @@ const (
 	MethodDown      = "down"
 	MethodSubscribe = "subscribe"
 
-	// MethodReconnect brings the tunnel back up using the last config the
-	// daemon accepted. It exists for clients that have no account and so
-	// cannot produce a config themselves — the browser extension.
+	// MethodReconnect brings the tunnel back up without being handed a
+	// config. It exists for clients that cannot produce one — the browser
+	// extension. The daemon reuses the config it last accepted, or fetches a
+	// fresh one if this machine has enrolled.
 	MethodReconnect = "reconnect"
+
+	// MethodEnroll registers this machine with a control plane using an
+	// invite code, then connects.
+	//
+	// The caller supplies an address and a code and gets back a stage. It
+	// never sees key material: the daemon generates the pair, sends only the
+	// public half, and keeps the private one. That is the whole reason this
+	// method exists rather than the extension calling the API itself.
+	MethodEnroll = "enroll"
 )
 
 // Stage mirrors the client's TunnelStage vocabulary so the GUI can map one to
@@ -53,6 +63,17 @@ type Request struct {
 type UpParams struct {
 	Config        string `json:"config"`
 	ServerAddress string `json:"serverAddress"`
+}
+
+// EnrollParams carries what the user typed: where their VPN server is, and the
+// code that lets this device on. Neither is a secret the daemon keeps for the
+// caller's benefit — the code is spent immediately and the token it returns
+// stays here.
+type EnrollParams struct {
+	ServerAddress string `json:"serverAddress"`
+	InviteToken   string `json:"inviteToken"`
+	Label         string `json:"label,omitempty"`
+	Platform      string `json:"platform,omitempty"`
 }
 
 // Response is the reply to a [Request]. Exactly one of Result or Error is set.
@@ -94,6 +115,12 @@ type StatusResult struct {
 	Message string `json:"message,omitempty"`
 	// Interface name the daemon manages, for diagnostics.
 	Interface string `json:"interface"`
+	// Whether this machine has a device identity it could connect with.
+	//
+	// The browser extension asks so it can show a setup form the moment it
+	// opens, rather than making the user press Connect to discover there is
+	// nothing to connect to.
+	Enrolled bool `json:"enrolled"`
 }
 
 // VersionResult answers [MethodVersion]. The GUI checks this on connect so a

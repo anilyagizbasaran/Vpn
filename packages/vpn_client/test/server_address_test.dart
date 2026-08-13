@@ -7,16 +7,24 @@ import 'helpers/fakes.dart';
 const _build = 'https://build.example.com';
 
 void main() {
+  // Without this, installing the fake storage channel throws in setUp and
+  // every test in the file fails before it runs — including the four that
+  // only check string validation and never touch storage at all.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late FakeSecureStorageChannel storage;
   late SecureStore store;
   late ApiClient api;
   late VpnServerAddress address;
 
   setUp(() {
-    FakeSecureStorageChannel().install();
+    storage = FakeSecureStorageChannel()..install();
     store = SecureStore();
     api = ApiClient(store: store, baseUrl: _build);
     address = VpnServerAddress(store: store, api: api, buildDefault: _build);
   });
+
+  tearDown(() => storage.uninstall());
 
   group('validation', () {
     test('accepts https', () {
@@ -27,7 +35,7 @@ void main() {
     });
 
     test(
-      'rejects http, because sign-in would send the password in the clear',
+      'rejects http, because the device token would travel in the clear',
       () {
         expect(
           () => VpnServerAddress.validate('http://vpn.example.com'),
@@ -123,5 +131,52 @@ void main() {
     await address.change(_build);
 
     expect(await store.readPeerId(), 7);
+  });
+
+  group('with no address compiled in', () {
+    // The shape a released build actually ships in: everyone who runs this has
+    // their own server, so there is nothing to bake in and the app has to ask.
+    late SecureStore freshStore;
+    late VpnServerAddress blank;
+
+    setUp(() {
+      freshStore = SecureStore();
+      blank = VpnServerAddress(
+        store: freshStore,
+        api: ApiClient(store: freshStore, baseUrl: ''),
+        buildDefault: '',
+      );
+    });
+
+    test('starts unconfigured, so the app knows to ask', () {
+      expect(blank.isConfigured, isFalse);
+      expect(blank.current, isEmpty);
+    });
+
+    test('is configured once an address is entered', () async {
+      await blank.change('https://vpn.example.com');
+
+      expect(blank.isConfigured, isTrue);
+      expect(blank.current, 'https://vpn.example.com');
+    });
+
+    test('remembers it across a restart', () async {
+      await blank.change('https://vpn.example.com');
+
+      // Stored even though there is no default to differ from. Writing null
+      // when the value equals the default is right only when the default is
+      // real; here it would make the next launch ask all over again.
+      expect(await freshStore.readServerUrl(), 'https://vpn.example.com');
+
+      final reloaded = VpnServerAddress(
+        store: freshStore,
+        api: ApiClient(store: freshStore, baseUrl: ''),
+        buildDefault: '',
+      );
+      await reloaded.load();
+
+      expect(reloaded.current, 'https://vpn.example.com');
+      expect(reloaded.isConfigured, isTrue);
+    });
   });
 }

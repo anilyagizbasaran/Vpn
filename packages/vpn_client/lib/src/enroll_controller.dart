@@ -92,6 +92,14 @@ class EnrollController extends ChangeNotifier {
       return true;
     } on ApiException catch (error) {
       _error = error.message;
+      // A rejected code has to land on a definite answer. Left at [checking],
+      // the app decides there is nothing to show yet and the user is looking
+      // at a screen with an error on it and no way to try again.
+      //
+      // Guarded rather than assigned outright: an already-enrolled device that
+      // fails to enrol again is still enrolled, and saying otherwise would
+      // throw away a working device over one bad request.
+      if (_status != EnrollStatus.enrolled) _status = EnrollStatus.notEnrolled;
       return false;
     } finally {
       _busy = false;

@@ -215,7 +215,7 @@ async function applyRulesets(settings) {
  * which suits a client that asks a short question occasionally. A long-lived
  * port would keep a process alive for the whole browser session.
  */
-function ask(action) {
+function ask(action, extra = {}) {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
@@ -232,7 +232,7 @@ function ask(action) {
     );
 
     try {
-      chrome.runtime.sendNativeMessage(HOST_NAME, { action }, (reply) => {
+      chrome.runtime.sendNativeMessage(HOST_NAME, { action, ...extra }, (reply) => {
         clearTimeout(timer);
         if (chrome.runtime.lastError) {
           finish({
@@ -315,6 +315,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const reply = await ask(message.type);
         // Refresh from the daemon rather than trusting the reply: the tunnel
         // may still be mid-transition.
+        await refreshBadge();
+        sendResponse(reply);
+        return;
+      }
+
+      case 'enroll': {
+        // Straight through to the daemon. The extension deliberately keeps no
+        // copy of either value: the code is spent on first use, and the
+        // address belongs with the key it is useless without, which is in the
+        // daemon and not here.
+        const reply = await ask('enroll', {
+          serverAddress: String(message.serverAddress ?? '').trim(),
+          inviteToken: String(message.inviteToken ?? '').trim(),
+        });
         await refreshBadge();
         sendResponse(reply);
         return;

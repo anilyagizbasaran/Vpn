@@ -59,7 +59,7 @@ void main() {
     );
 
     final config = await enrolment.enrol(
-      inviteToken: 'vpninv_x',
+      inviteToken: 'ABCD123456',
       publicKey: 'mypub',
       platform: 'linux',
     );
@@ -78,7 +78,7 @@ void main() {
       body: {..._configJson(), 'deviceToken': 'vpndev_stored'},
     );
 
-    await enrolment.enrol(inviteToken: 'vpninv_x', publicKey: 'p');
+    await enrolment.enrol(inviteToken: 'ABCD123456', publicKey: 'p');
 
     // A crash after this point still leaves a device this app can authenticate
     // as, rather than one registered on the server and unreachable from here.
@@ -91,7 +91,7 @@ void main() {
       http.enqueue('POST', '/enroll', status: 201, body: _configJson());
 
       expect(
-        () => enrolment.enrol(inviteToken: 'vpninv_x', publicKey: 'p'),
+        () => enrolment.enrol(inviteToken: 'ABCD123456', publicKey: 'p'),
         throwsA(isA<ApiException>()),
       );
     },
@@ -105,7 +105,7 @@ void main() {
       body: {..._configJson(), 'deviceToken': 'vpndev_abc'},
     );
 
-    await enrolment.enrol(inviteToken: 'vpninv_x', publicKey: 'p');
+    await enrolment.enrol(inviteToken: 'ABCD123456', publicKey: 'p');
 
     // There is nothing to authenticate with yet; sending a stale header would
     // be the difference between "invalid invite" and "signed out".

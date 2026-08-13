@@ -187,7 +187,11 @@ function rethrowUnique(error: unknown, hintByColumn: Record<string, string>): ne
 class SqliteInviteRepository implements InviteRepository {
   constructor(private readonly db: Db) {}
 
-  async create(input: { label: string; tokenHash: string; deviceLimit: number }): Promise<Invite> {
+  async create(input: {
+    label: string;
+    tokenHash: string;
+    deviceLimit: number | null;
+  }): Promise<Invite> {
     const row = this.db
       .prepare(
         `INSERT INTO invites (label, token_hash, device_limit, created_at)
@@ -219,6 +223,20 @@ class SqliteInviteRepository implements InviteRepository {
 
   async touch(id: number, usedAt: string): Promise<void> {
     this.db.prepare('UPDATE invites SET last_used_at = ? WHERE id = ?').run(usedAt, id);
+  }
+
+  async rotateToken(id: number, tokenHash: string): Promise<Invite | null> {
+    // revoked_at is cleared as well: rotating a code is how a revoked invite is
+    // brought back, and leaving it set would hand out a code that enrolment
+    // then refuses with "that code has been revoked".
+    const row = this.db
+      .prepare(
+        `UPDATE invites SET token_hash = @tokenHash, revoked_at = NULL
+          WHERE id = @id
+        RETURNING *`,
+      )
+      .get({ id, tokenHash }) as InviteRow | undefined;
+    return row ? toInvite(row) : null;
   }
 
   async revoke(id: number, revokedAt: string): Promise<boolean> {

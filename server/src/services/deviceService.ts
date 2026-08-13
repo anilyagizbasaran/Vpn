@@ -233,15 +233,20 @@ export class DeviceService {
    */
   async enrolDevice(
     owner: { inviteId: number; tokenHash: string },
-    limit: number,
+    limit: number | null,
     input: CreateDeviceRequest,
   ): Promise<DeviceConfigView> {
-    const active = await this.repos.devices.countActiveByInvite(owner.inviteId);
-    if (active >= limit) {
-      throw quotaExceeded(
-        `Device limit reached (${limit}). Remove a device before adding a new one.`,
-        { limit, active },
-      );
+    // A null limit is the ordinary case now. What still bounds enrolment is
+    // the address pool, which answers with a 409 of its own, and a leaked code
+    // is answered by rotating it rather than by a number chosen in advance.
+    if (limit !== null) {
+      const active = await this.repos.devices.countActiveByInvite(owner.inviteId);
+      if (active >= limit) {
+        throw quotaExceeded(
+          `Device limit reached (${limit}). Remove a device with \`vpn revoke\` first.`,
+          { limit, active },
+        );
+      }
     }
 
     if (input.publicKey !== undefined && !isWireGuardKey(input.publicKey)) {
@@ -406,6 +411,30 @@ export class DeviceService {
       (await this.repos.servers.getDefault()) ??
       (await this.repos.servers.listAllocatable())[0]!;
     return this.buildConfig(rotated, server, null);
+  }
+
+  /**
+   * Every live device enrolled with an invite, in enrolment order. The
+   * operator's view of who is on the server — there is no other.
+   */
+  async listForInvite(inviteId: number): Promise<DeviceView[]> {
+    const devices = await this.repos.devices.listActiveByInvite(inviteId);
+    return Promise.all(devices.map((device) => this.toDeviceView(device)));
+  }
+
+  /**
+   * Cuts off every device an invite let in.
+   *
+   * The other half of revoking a code, and the half that was missing. Marking
+   * an invite dead stops further enrolment and nothing else: the devices
+   * already through it hold their own tokens and stay on the interface. An
+   * operator who revoked a leaked code and stopped there would have been told
+   * the leak was handled while the tunnel stayed up.
+   */
+  async revokeAllForInvite(inviteId: number): Promise<number> {
+    const devices = await this.repos.devices.listActiveByInvite(inviteId);
+    for (const device of devices) await this.revoke(device);
+    return devices.length;
   }
 
   private async revoke(device: Device): Promise<void> {

@@ -151,7 +151,7 @@ void main() {
         );
 
         final ok = await enrol.enrol(
-          inviteToken: 'vpninv_code',
+          inviteToken: 'ABCD123456',
           label: 'Android device',
           platform: 'android',
         );
@@ -186,7 +186,7 @@ void main() {
         );
 
         final ok = await enrol.enrol(
-          inviteToken: 'vpninv_dead',
+          inviteToken: 'DEAD123456',
           label: 'Android device',
           platform: 'android',
         );
@@ -214,7 +214,7 @@ void main() {
       );
 
       final ok = await enrol.enrol(
-        inviteToken: 'vpninv_full',
+        inviteToken: 'FULL123456',
         label: 'Android device',
         platform: 'android',
       );

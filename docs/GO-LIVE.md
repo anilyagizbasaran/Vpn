@@ -137,20 +137,18 @@ means no token was ever minted.
 The whole chain is up, so now run it end to end:
 
 ```bash
-npm run invite -- --label acceptance --devices 4     # a throwaway code
-node scripts/acceptance.mjs https://vpn.example.com vpninv_... --check-wg
-npm run invite -- --revoke <id>
+npm run vpn -- status                                # shows the code
+node scripts/acceptance.mjs https://vpn.example.com ABCD123456 --check-wg
 ```
 
-It needs an invite code because that is now the only way in. Mint a throwaway
-one first and revoke it after.
+It needs the code because that is now the only way in.
 
 Run on the server *itself*, `--check-wg` enrols a device and **waits for the
 key to appear in `wg show`** — exercising the API, the database, the agent and
 `wg`. It is the one thing no mock can test. It also checks the inverse of
 rotation: that the old key **leaves** the interface.
 
-Every device it enrols removes itself at the end, and revoking the code cuts
+Every device it enrols removes itself at the end, and `vpn reset --kick` cuts
 off anything it missed, so it is safe against production. Add `--rate-limits`
 to exercise the limiter too — it **locks the IP you run it from out**.
 
@@ -223,23 +221,31 @@ the native host manifest, and Chrome has to be restarted afterwards.
 
 **Check:** the badge shows `ON` and Disconnect works from the popup.
 
-## 7. Invite codes
+## 7. The code
 
-This is how anyone gets on. There is no registration page and no account.
+This is how anything gets on. There is no registration page and no account.
+
+`install.sh` puts a `vpn` command on the server:
 
 ```bash
-cd server
-npm run invite -- --label "Ali" --devices 5   # prints the code once
-npm run invite -- --list                      # label, devices used, last used
-npm run invite -- --revoke 3
+vpn status          # is a code set, and how many devices are on it
+vpn devices         # one line per device
+vpn revoke 3        # cut off one device
+vpn reset           # new code; devices stay connected
+vpn reset --kick    # new code and remove every device
 ```
 
-Under Docker, prefix with `docker compose exec api node scripts/invite.mjs`.
+Without the installer it is `cd server && npm run vpn -- status`, or under
+Docker `docker compose exec api node scripts/vpn.mjs status`.
 
-One code per person rather than one shared code: revoking then cuts off exactly
-that person's devices, within one agent poll, without touching anyone else. The
-code is displayed once and stored only as an HMAC, so a lost code is reissued
-rather than looked up.
+One code for everything you own. Ten characters, shown once, stored only as an
+HMAC — so a lost code is reissued with `vpn reset` rather than looked up, and
+that reissue leaves the devices already connected alone.
+
+**For a leak, `vpn reset` alone is not enough.** It stops the old code
+enrolling anything new, but whoever already got in keeps their own device
+token and stays on the interface. `vpn reset --kick` is the one that removes
+them, at the cost of setting your own devices up again.
 
 The download page is served at `/` from inside the `caddy` image; there is
 nothing to build for it.

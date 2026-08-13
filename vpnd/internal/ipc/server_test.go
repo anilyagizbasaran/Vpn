@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"vpnd/internal/enroll"
 	"vpnd/internal/protocol"
 	"vpnd/internal/tunnel"
 )
@@ -36,7 +37,11 @@ func newHarness(t *testing.T) *harness {
 	manager := tunnel.NewManager(driver, "vpn0", log)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go NewServer(manager, log).handle(ctx, serverConn)
+	// A store in the test's own temp directory: enrolment writes a private
+	// key, and a test that wrote one into /etc/wireguard would be a surprise.
+	server := NewServer(manager, enroll.NewStore(t.TempDir()), log)
+	server.newClient = func(string) enroller { return &stubEnroller{} }
+	go server.handle(ctx, serverConn)
 
 	h := &harness{
 		t:       t,

@@ -14,8 +14,8 @@ The design goal is that **compromising any one component is not enough**.
 | Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Touch WireGuard. Holds no private keys and no privileges |
 | Node agent (`vpn-node-agent`) | How to edit the interface | Read a token, or learn another node's peers |
 | Client (`apps/client`) | Its device token, **the private key** | Touch the network interface (on desktop) |
-| Desktop daemon (`vpnd`) | How to bring a local tunnel up | Reach the API — it never makes an outbound call |
-| Extension (`extension/`) | Whether the tunnel is up | See or produce a config |
+| Desktop daemon (`vpnd`) | How to bring a tunnel up; on desktop, the device token and **the private key** | Anything beyond the one control plane it was pointed at |
+| Extension (`extension/`) | Whether the tunnel is up | See, hold or produce key material |
 
 The private key is generated on the device and never leaves it. The server
 stores only the public key, so a full disk compromise of the control plane
@@ -44,15 +44,24 @@ Then download the app from
 address and the code. Nothing else: no email, no password, no account to
 recover.
 
-More codes, one per person or per household:
+One code, every device. Manage it from the server:
 
 ```bash
-cd /opt/vpn && docker compose exec api node scripts/invite.mjs --label "Ali"
-docker compose exec api node scripts/invite.mjs --list
-docker compose exec api node scripts/invite.mjs --revoke 3
+vpn status          # is a code set, and how many devices are on it
+vpn devices         # one line per device: what it is, when, how much traffic
+vpn revoke 3        # cut off one device; its address returns to the pool
+vpn reset           # new code, devices stay connected
+vpn reset --kick    # new code and remove every device
 ```
 
-Revoking a code cuts off every device enrolled with it, within one agent poll.
+The code is ten characters from Crockford's base32 — no I, L, O or U, so
+nothing has to be guessed from a font. It is shown once and stored only as an
+HMAC, so `vpn status` can say a code exists but never what it is; if you lose
+it, `vpn reset` issues a new one without disturbing anything already
+connected.
+
+There is no device quota. What bounds enrolment is the address pool, and what
+answers a leaked code is `vpn reset --kick`.
 
 ## How it works
 
@@ -138,7 +147,7 @@ npm run dev               # http://localhost:3000
 
 With `WG_SKIP_BOOTSTRAP_NODE=true` and no node defined, `/ready` answers 503 and
 enrolment returns 422 — that is correct, not a failure. Add a node with
-`npm run node:add`, then mint a code with `npm run invite -- --label me`.
+`npm run node:add`, then see the code with `npm run vpn -- status`.
 
 Flutter side — one `pub get` at the workspace root resolves everything:
 
@@ -206,13 +215,13 @@ the class of problem that works on a laptop and fails silently on a server.
 
 ```bash
 cd server
-npm run invite -- --label acceptance --devices 4     # a throwaway code
-npm run acceptance -- https://api.example.com vpninv_... --check-wg
-npm run invite -- --revoke <id>
+npm run vpn -- status                                   # the code
+npm run acceptance -- https://api.example.com ABCD123456 --check-wg
 ```
 
-Every device the acceptance run enrols removes itself at the end, and revoking
-the code cuts off anything it missed, so it is safe against production. The daemon script genuinely submits a hostile config
+Every device the acceptance run enrols removes itself at the end, and
+`vpn reset --kick` cuts off anything it missed, so it is safe against
+production. The daemon script genuinely submits a hostile config
 containing `PostUp` and then checks whether the file it names was written — if
 it had been, that would be code execution as root.
 
@@ -230,6 +239,20 @@ Stated explicitly, including where the edges are:
 - **Concurrent allocation** is resolved by a partial unique index in the
   database, not by application logic. Two simultaneous `POST /enroll` may
   compute the same address; the loser retries up to six times.
+- **The desktop daemon enrols, and that is a deliberate trade.** The browser
+  extension sets a machine up by handing `vpnd` an address and an invite code;
+  `vpnd` generates the keypair, calls the API and keeps the key. It is the most
+  privileged component and it now makes outbound calls, which it did not
+  before. The alternative was worse: an extension that enrolled itself would
+  keep a private key in `chrome.storage.local`, in the clear, readable by
+  anything that can read the browser profile. The reach is narrowed instead —
+  HTTPS only, one host, no redirects, a timeout and a response size cap.
+- **The desktop daemon keeps a key and a token on disk**, mode 0600, beside the
+  tunnel config. Previously the config was written on connect and deleted on
+  disconnect, so key material lived on disk only while the tunnel was up; now
+  it persists. That is what makes the extension work after a reboot. An
+  attacker who can read that file can connect as that device until it is
+  revoked — which they could already do while the tunnel was up.
 - **The control plane holds no privileges.** Clients generate keys, presharing
   uses 32 random bytes, and agents apply peers. No `sudo`, no `CAP_NET_ADMIN`,
   no `wg` binary — it runs in a container with an empty capability set.
@@ -245,8 +268,15 @@ Stated explicitly, including where the edges are:
   to reset, no email to enumerate, no session to expire, no refresh token to
   rotate and no reuse detection to get subtly wrong. An invite says one thing —
   this person may enrol devices — and revoking it says the opposite.
-- **Invite and device tokens are 32 random bytes, stored only as an HMAC.** A
-  database leak yields no usable credential, and the token is shown once.
+- **The invite code is ten characters — 50 bits — and that is deliberate.** It
+  has to be read off a terminal and typed into a phone, and 32 random bytes
+  does not survive that. Fifty bits is enough *because the code can only be
+  attacked online*: `POST /enroll` is rate limited to 30 attempts an hour per
+  address, which puts a single attacker at ~10^13 hours. The rate limiter is
+  not a convenience here, it is the whole argument — remove it and the code
+  becomes weak. Device tokens, which nobody types, stay at 32 random bytes.
+- **Both are stored only as an HMAC.** A database leak yields no usable
+  credential, and a code is shown once.
 - **The two token kinds are hashed with different domain separators**
   (`invite:`, `device:`, `node:`), so a token of one kind can never be presented
   as another. Without that, a device token would be an invite — a stolen phone
@@ -255,8 +285,10 @@ Stated explicitly, including where the edges are:
   no route takes a device id, so there is no ownership check to get wrong: the
   only device a token can reach is its own. That is why the client never
   retries a 401 — nothing about it can go stale, so a 401 means revoked.
-- **Revoking an invite revokes its devices** by cascade, within one agent poll.
-  One code per person makes cutting someone off a single command.
+- **Revoking a code does not, on its own, disconnect anybody.** The devices
+  already enrolled hold their own tokens. `vpn reset --kick` is the operation
+  that does both, and it is the only one offered for a leak, precisely so the
+  half-measure is not something an operator can pick by accident.
 - **The agent validates config before it reaches argv.** The control plane is
   trusted over TLS, but not trusted enough to inject arguments into a command
   running as root on every node.

@@ -79,9 +79,13 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if config == "" {
+		// The caller decides what to do next: with a stored identity the
+		// daemon fetches a config itself, and without one there is genuinely
+		// nothing to reconnect to. Telling the user to open the app would be
+		// wrong now that the extension can set this machine up on its own.
 		return &protocol.Error{
 			Code:    protocol.CodeUnsupported,
-			Message: "There is no saved connection. Open the VPN app to connect.",
+			Message: "This computer is not set up yet. Enter your server address and invite code.",
 		}
 	}
 	return m.Up(ctx, config, server)

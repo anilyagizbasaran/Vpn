@@ -5,9 +5,19 @@
 **Yapamaz: tünel kuramaz.** Bir tarayıcı eklentisi işletim sistemi seviyesinde
 VPN tüneli açamaz — `chrome.vpnProvider` API'si sadece ChromeOS'ta var.
 
-**Yapar:** masaüstü uygulamasının kurduğu tünelin durumunu gösterir, açıp
-kapatır. Rozette anlık durum, popup'ta tek tuşla bağlan/kes, `Ctrl+Shift+U`
-ile klavyeden.
+**Yapar:** bilgisayardaki VPN servisine (`vpnd`) sunucu adresini ve davet
+kodunu iletir, o da bu makineyi kaydedip tüneli açar. Rozette anlık durum,
+popup'ta tek tuşla bağlan/kes, `Ctrl+Shift+U` ile klavyeden.
+
+**Anahtar eklentide durmaz.** Popup'a girilen iki şey doğrudan `vpnd`'ye
+gider; WireGuard anahtar çiftini `vpnd` üretir ve kendinde tutar. Bu boru
+hattından hiçbir yönde anahtar geçmez — native host'un izin listesinde `up`
+metodunun bulunmamasının sebebi de bu. Eklenti kaydedilirse
+`chrome.storage.local` düz metindir ve tarayıcı profiline erişen her şey
+okuyabilir; oraya private key koymak istemiyoruz.
+
+Kod bir kez kullanılır: makine kendi cihaz token'ını alır ve saklar, yani
+yeniden başlatmadan sonra da eklenti tek başına bağlanır.
 
 **Ve tünelin kapatamadığı deliği kapatır.** Asıl gerekçesi bu:
 

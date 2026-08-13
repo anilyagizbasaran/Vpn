@@ -1,6 +1,6 @@
 import type { Repositories } from '../db/repositories.js';
 import type { Device, Invite } from '../db/types.js';
-import { hmac, randomToken } from '../utils/crypto.js';
+import { hmac, humanCode, normalizeCode, randomToken } from '../utils/crypto.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 
 /**
@@ -19,9 +19,20 @@ export function hashDeviceToken(pepper: string, token: string): string {
   return hmac(pepper, DEVICE_TOKEN_DOMAIN + token);
 }
 
-/** Recognisable at a glance in a terminal, and greppable in a log. */
-const INVITE_PREFIX = 'vpninv_';
+/**
+ * Device tokens keep a prefix: nobody types one, they are pasted by machines,
+ * and being greppable in a log is worth the length.
+ *
+ * Invite codes do not. They are read off a terminal and typed into a phone, so
+ * every character is one a person has to get right. What the prefix bought —
+ * telling the two kinds apart — is already guaranteed by the domain separators
+ * above, and guaranteed properly: the hash, not the shape, is what stops one
+ * being spent as the other.
+ */
 const DEVICE_PREFIX = 'vpndev_';
+
+/** Characters in a code. Ten of them, from a 32-symbol alphabet: 50 bits. */
+export const INVITE_CODE_LENGTH = 10;
 
 export interface MintedInvite {
   invite: Invite;
@@ -44,18 +55,36 @@ export class InviteService {
     private readonly config: { tokenPepper: string },
   ) {}
 
-  async mint(input: { label: string; deviceLimit: number }): Promise<MintedInvite> {
-    const token = `${INVITE_PREFIX}${randomToken(32)}`;
+  async mint(input: { label: string; deviceLimit?: number | null }): Promise<MintedInvite> {
+    const token = humanCode(INVITE_CODE_LENGTH);
     const invite = await this.repos.invites.create({
       label: input.label,
       tokenHash: hashInviteToken(this.config.tokenPepper, token),
-      deviceLimit: input.deviceLimit,
+      deviceLimit: input.deviceLimit ?? null,
     });
     return { invite, token };
   }
 
   list(): Promise<Invite[]> {
     return this.repos.invites.list();
+  }
+
+  /**
+   * Replaces the code without disturbing the devices already enrolled with it.
+   *
+   * This is the answer to "I think my code got out": the old one stops working
+   * for enrolment immediately, and nobody has to set their phone up again. It
+   * does *not* remove whoever already got in — see
+   * [DeviceService.revokeAllForInvite] for that, which is the other half of
+   * responding to a leak.
+   */
+  async rotate(id: number): Promise<MintedInvite | null> {
+    const token = humanCode(INVITE_CODE_LENGTH);
+    const invite = await this.repos.invites.rotateToken(
+      id,
+      hashInviteToken(this.config.tokenPepper, token),
+    );
+    return invite ? { invite, token } : null;
   }
 
   revoke(id: number, at = new Date()): Promise<boolean> {
@@ -70,8 +99,10 @@ export class InviteService {
    * safe to give: presenting the token already proves you were given it.
    */
   async resolve(token: string): Promise<Invite> {
+    // Normalised first, so a code typed with the dashes someone added to keep
+    // their place, or with an O where the alphabet has a zero, still resolves.
     const invite = await this.repos.invites.findByTokenHash(
-      hashInviteToken(this.config.tokenPepper, token),
+      hashInviteToken(this.config.tokenPepper, normalizeCode(token)),
     );
     if (!invite) throw unauthorized('That invite code is not valid.');
     if (invite.revokedAt) throw forbidden('That invite code has been revoked.');

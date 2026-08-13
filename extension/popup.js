@@ -14,6 +14,10 @@ const killSwitchEl = document.getElementById('killSwitch');
 const autoConnectEl = document.getElementById('autoConnect');
 const blockAdsEl = document.getElementById('blockAds');
 const blockTrackersEl = document.getElementById('blockTrackers');
+const setupForm = document.getElementById('setup');
+const serverAddressEl = document.getElementById('serverAddress');
+const inviteTokenEl = document.getElementById('inviteToken');
+const enrollButton = document.getElementById('enroll');
 const allowSiteRow = document.getElementById('allow-site-row');
 const allowSiteEl = document.getElementById('allowSite');
 const siteNameEl = document.getElementById('site-name');
@@ -37,6 +41,12 @@ const WEBRTC_HINTS = {
 };
 
 const BUSY = new Set(['connecting', 'preparing', 'disconnecting']);
+
+/** The setup form and the connect button are alternatives, never both. */
+function showSetup(show) {
+  setupForm.hidden = !show;
+  toggle.hidden = show;
+}
 
 function send(message) {
   return new Promise((resolve) => {
@@ -144,6 +154,13 @@ async function refresh() {
     send({ type: 'get-settings' }),
   ]);
   render(status, meta.ok ? meta.connectedSince : null);
+
+  // The daemon reports whether this machine has ever enrolled, so the form is
+  // on screen the moment the popup opens rather than after a failed connect.
+  // Only when the daemon answered at all: a service that cannot be reached is
+  // a different problem, and a setup form would send the user hunting for a
+  // code they do not need.
+  if (status.ok) showSetup(!status.enrolled);
   if (meta.ok) {
     renderSettings(meta.settings);
     renderSite(meta.allowlist ?? []);
@@ -156,11 +173,39 @@ toggle.addEventListener('click', async () => {
   toggle.textContent = 'Working…';
 
   const reply = await send({ type: action });
-  // `connect` asks the daemon to reuse the config it already has. If it has
-  // none — the app has not connected since the service started — that is not
-  // a failure to hide, it is an instruction.
+  // Re-read from the daemon rather than trusting the reply: the tunnel may
+  // still be mid-transition, and this is what puts the setup form on screen if
+  // the device turned out to be gone.
   await refresh();
   if (!reply.ok && reply.error) showError(reply.error);
+});
+
+setupForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const serverAddress = serverAddressEl.value.trim();
+  const inviteToken = inviteTokenEl.value.trim();
+  if (!serverAddress || !inviteToken) return;
+
+  enrollButton.disabled = true;
+  enrollButton.textContent = 'Setting up...';
+  showError(null);
+
+  const reply = await send({ type: 'enroll', serverAddress, inviteToken });
+
+  enrollButton.disabled = false;
+  enrollButton.textContent = 'Set up and connect';
+
+  if (!reply.ok) {
+    showError(reply.error ?? 'Setup failed.');
+    return;
+  }
+
+  // Cleared on success, not on failure: retyping a long code because the
+  // address had a typo is its own small misery.
+  inviteTokenEl.value = '';
+  showSetup(false);
+  await refresh();
 });
 
 webrtcEl.addEventListener('change', async () => {

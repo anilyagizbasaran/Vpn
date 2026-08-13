@@ -82,6 +82,42 @@ describe('node sync', () => {
     expect((await nodeSync(app, fra)).body.peers).toHaveLength(0);
   });
 
+  it('drops every device of a revoked code, not just the code', async () => {
+    const device = await enrolDevice(app, container);
+    expect((await nodeSync(app, fra)).body.peers).toHaveLength(1);
+
+    // Revoking the invite alone stops further enrolment and nothing else. The
+    // device holds its own token and stays on the interface, so an operator
+    // who thought they had cut off a leaked code would still be carrying the
+    // traffic. Both halves have to run.
+    const invite = (await container.repos.invites.list())[0]!;
+    await container.invites.revoke(invite.id);
+    expect((await nodeSync(app, fra)).body.peers).toHaveLength(1);
+
+    const removed = await container.devices.revokeAllForInvite(invite.id);
+
+    expect(removed).toBe(1);
+    expect((await nodeSync(app, fra)).body.peers).toHaveLength(0);
+    // ...and the device's own token stops working the moment it is used.
+    expect((await request(app).get('/device').set(auth(device.deviceToken))).status).toBe(401);
+  });
+
+  it('returns a revoked device address to the pool', async () => {
+    const { inviteToken } = await enrolDevice(app, container);
+    const invite = (await container.repos.invites.list())[0]!;
+
+    await container.devices.revokeAllForInvite(invite.id);
+
+    // The address it held was the lowest free one, so the next enrolment gets
+    // it straight back. Without this a long-lived server slowly runs out of
+    // pool as devices come and go.
+    const next = await request(app)
+      .post('/enroll')
+      .send({ inviteToken, publicKey: clientKeypair().publicKey })
+      .expect(201);
+    expect(next.body.device.locations[0].allowedIp).toBe('10.8.0.2/32');
+  });
+
   it('never leaks one node the peers of another', async () => {
     const ams = await addNode(container, {
       region: 'nl-ams',

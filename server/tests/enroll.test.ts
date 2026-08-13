@@ -36,7 +36,7 @@ describe('enrolment', () => {
   it('refuses an invite that does not exist', async () => {
     await request(app)
       .post('/enroll')
-      .send({ inviteToken: 'vpninv_nope', publicKey: KEY('b') })
+      .send({ inviteToken: 'ZZZZZZZZZZ', publicKey: KEY('b') })
       .expect(401);
   });
 

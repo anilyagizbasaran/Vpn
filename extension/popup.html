@@ -20,6 +20,32 @@
 
       <p id="error" class="error" hidden></p>
 
+      <!--
+        Shown only when the daemon says this machine has never enrolled.
+        Neither value is kept here: both go straight to the daemon, which
+        generates the keypair and stores it. The extension holds no key.
+      -->
+      <form id="setup" class="setup" hidden>
+        <h2 class="settings-title">Set up this computer</h2>
+        <label class="field" for="serverAddress">
+          <span class="field-label">Server address</span>
+          <input type="url" id="serverAddress" class="input"
+                 placeholder="https://vpn.example.com"
+                 autocomplete="off" spellcheck="false" required />
+        </label>
+        <label class="field" for="inviteToken">
+          <span class="field-label">Invite code</span>
+          <input type="password" id="inviteToken" class="input"
+                 placeholder="ABCD123456"
+                 autocomplete="off" spellcheck="false" required />
+        </label>
+        <button type="submit" id="enroll" class="toggle">Set up and connect</button>
+        <p class="field-hint">
+          Your server printed both of these when it was installed. The code is
+          used once: this computer gets its own credential and keeps it.
+        </p>
+      </form>
+
       <section class="settings">
         <h2 class="settings-title">Protection</h2>
 

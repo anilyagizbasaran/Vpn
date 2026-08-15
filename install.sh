@@ -367,8 +367,13 @@ if [ "\$1" = "update" ]; then
   done
 
   if [ "\$state" = "healthy" ]; then
+    # Deleted now that it is not needed. A backup kept "just in case" is a
+    # record of every device that existed when it was taken, including the
+    # ones since removed — which is the one thing this server does not keep.
+    docker compose exec -T api node scripts/backup.mjs --discard >/dev/null 2>&1 || true
     echo
     echo "  Updated. Your code and your devices are untouched."
+    echo "  The backup was deleted; nothing about this update was recorded."
     echo
     exit 0
   fi

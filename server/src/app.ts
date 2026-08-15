@@ -48,6 +48,13 @@ export function createApp({ repos, invites, devices, nodes }: AppDependencies): 
     res.setHeader('x-request-id', req.requestId);
     const startedAt = process.hrtime.bigint();
     res.on('finish', () => {
+      // Failures only. A line per successful request carries no address and
+      // no device, but it still says this server was used at 03:14 and again
+      // at 03:47 — and with one person behind one invite code, an activity
+      // timeline is close enough to identifying them. The database keeps no
+      // history on purpose; the log must not quietly keep one instead.
+      if (res.statusCode < 400) return;
+
       logger.info('request', {
         requestId: req.requestId,
         method: req.method,

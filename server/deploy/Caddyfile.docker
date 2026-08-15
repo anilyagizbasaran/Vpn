@@ -48,8 +48,34 @@
 	@manifest path /releases.json
 	header @manifest Cache-Control "no-cache"
 
+	# Access logs with the identifying fields removed.
+	#
+	# The default JSON log records remote_ip, client_ip and every request
+	# header on every request. Docker keeps 50 MB of that, which is a record of
+	# who connected and when — the exact thing the database is built not to
+	# hold. A server that stores no device names and no timestamps, and then
+	# writes an addressed line for every /device/config call, has not kept the
+	# promise; it has moved where it is broken.
+	#
+	# What is left is status, path and duration: enough to see the API failing,
+	# not enough to tell anyone apart.
 	log {
 		output stdout
-		format json
+		# Errors only. Caddy logs a served request at info and a failure at
+		# error, so this keeps the 5xx that means something is broken and drops
+		# the line-per-request that would otherwise be a timeline of when this
+		# VPN was in use — anonymous, but still a record of activity, and on a
+		# single-user server that is nearly the same thing.
+		level ERROR
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>client_ip delete
+				request>remote_port delete
+				request>headers delete
+				resp_headers delete
+			}
+		}
 	}
 }

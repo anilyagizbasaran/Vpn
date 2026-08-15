@@ -200,6 +200,18 @@ kept off the bridge: the first hands out a device token, the second is
 destructive and machine-wide. `cmd/vpn-browser-host` asserts both in a test —
 the allowlist is the boundary, so it is checked rather than trusted.
 
+**Nothing writes down who connected, or when.** The database was stripped to a
+key and an address per device, which is only half the promise: a proxy that
+logs a line per request, or a dated backup series, puts the history back where
+the schema refuses to keep it. So Caddy logs failures only, with `remote_ip`,
+`client_ip`, `remote_port` and every request header filtered out; the API logs
+only responses of 400 and above; and `vpn update` takes exactly one backup,
+overwritten each time and deleted the moment the update succeeds. With one
+person behind one invite code, an activity timeline is nearly an identity, so
+"anonymous but timestamped" is not good enough. Connection counts come from
+`wg show latest-handshakes`, which the kernel keeps for live peers only and
+never writes down.
+
 **IPv6 is routed into the tunnel and dropped there, on purpose.** This server
 does not carry IPv6 — the provider does not route it — so `::/0` in AllowedIPs
 looks like dead weight. It is the opposite. It sends the client's IPv6 traffic

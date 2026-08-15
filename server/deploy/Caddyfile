@@ -21,8 +21,21 @@ api.example.com {
 		-Server
 	}
 
+	# Failures only, with the addressing fields removed. See the long note in
+	# Caddyfile.docker: the database keeps no history, and an access log that
+	# records an address and a time for every request puts it back.
 	log {
 		output file /var/log/caddy/vpn-api.log
-		format json
+		level ERROR
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>client_ip delete
+				request>remote_port delete
+				request>headers delete
+				resp_headers delete
+			}
+		}
 	}
 }

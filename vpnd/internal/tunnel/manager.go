@@ -29,6 +29,11 @@ type Manager struct {
 	// make that trade can turn it off.
 	rememberConfig bool
 
+	// Blocks traffic that is not going through the tunnel. Never nil — a
+	// platform that does not need one here gets [NoKillSwitch], so no call
+	// site has to remember to check.
+	killSwitch KillSwitch
+
 	// Guards every field below and is held for the whole of an Up/Down, so
 	// operations queue rather than interleave.
 	mu         sync.Mutex
@@ -36,6 +41,10 @@ type Manager struct {
 	failure    string
 	lastConfig string
 	lastServer string
+
+	// Host:port of the control plane, kept reachable while the kill switch is
+	// on so a dropped tunnel can be rebuilt. Empty until something enrols.
+	controlPlane string
 
 	subsMu sync.Mutex
 	subs   map[int]chan protocol.Event
@@ -50,7 +59,46 @@ func NewManager(driver Driver, iface string, log *slog.Logger) *Manager {
 		stage:          protocol.StageDisconnected,
 		subs:           make(map[int]chan protocol.Event),
 		rememberConfig: true,
+		killSwitch:     NoKillSwitch{Reason: "not enabled"},
 	}
+}
+
+// SetKillSwitch installs the leak protection. Call before serving.
+func (m *Manager) SetKillSwitch(k KillSwitch) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.killSwitch = k
+}
+
+// SetControlPlane records the server to keep reachable while the kill switch
+// is on.
+//
+// Without it a tunnel that drops can never be rebuilt: fetching a fresh config
+// needs the control plane, and the kill switch is blocking exactly that. The
+// exception is one address on one port, and it is the same machine the tunnel
+// endpoint is on in most installs.
+func (m *Manager) SetControlPlane(hostPort string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.controlPlane = hostPort
+}
+
+// KillSwitchName reports the active implementation, for the startup log.
+func (m *Manager) KillSwitchName() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.killSwitch.Name()
+}
+
+// ReleaseKillSwitch clears any block, including one a previous run left behind.
+//
+// Called at startup. A daemon that crashed with the rules installed leaves a
+// machine with no network and no obvious cause, so the first thing a fresh
+// process does is take that possibility away.
+func (m *Manager) ReleaseKillSwitch(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.killSwitch.Release(ctx)
 }
 
 // SetRememberConfig controls whether the last config is kept for [Reconnect].
@@ -186,6 +234,29 @@ func (m *Manager) Up(ctx context.Context, config, serverAddress string) error {
 		return &protocol.Error{Code: protocol.CodeTunnelFailure, Message: message}
 	}
 
+	// After the interface is up, because the rules name it and because the
+	// lookups below have to happen while there is still a route to do them on.
+	if err := m.engageKillSwitch(ctx, serverAddress); err != nil {
+		// Down again. Connecting without the protection the user turned on is
+		// the wrong direction to fail in: they would be browsing, unprotected,
+		// looking at a screen that says connected.
+		if downErr := m.driver.Down(ctx, m.iface); downErr != nil {
+			m.log.Error("could not stop the tunnel after the kill switch failed",
+				"error", downErr)
+		}
+		// Best effort, in case a partial ruleset landed.
+		_ = m.killSwitch.Release(ctx)
+
+		var failure *FailureError
+		message := "Traffic outside the tunnel could not be blocked, so the tunnel was not started."
+		if asFailure(err, &failure) {
+			message = failure.UserMessage()
+		}
+		m.log.Error("kill switch failed", "interface", m.iface, "error", err)
+		m.setStage(protocol.StageFailed, message)
+		return &protocol.Error{Code: protocol.CodeTunnelFailure, Message: message}
+	}
+
 	if m.rememberConfig {
 		m.lastConfig, m.lastServer = config, serverAddress
 	}
@@ -193,6 +264,37 @@ func (m *Manager) Up(ctx context.Context, config, serverAddress string) error {
 	m.log.Info("tunnel up", "interface", m.iface, "server", serverAddress)
 	m.setStage(protocol.StageConnected, "")
 	return nil
+}
+
+// engageKillSwitch installs the block, with the tunnel's own server and the
+// control plane carved out.
+//
+// Called with m.mu held.
+func (m *Manager) engageKillSwitch(ctx context.Context, serverAddress string) error {
+	if _, isNone := m.killSwitch.(NoKillSwitch); isNone {
+		return nil
+	}
+
+	allow, err := ResolveAllow(ctx, serverAddress, "udp")
+	if err != nil {
+		return err
+	}
+
+	if m.controlPlane != "" {
+		control, err := ResolveAllow(ctx, m.controlPlane, "tcp")
+		if err != nil {
+			// Not fatal. The tunnel and its endpoint are what protection
+			// depends on; the control plane carve-out only makes recovery
+			// smoother, and refusing to connect over it would be a worse
+			// trade than reconnecting by hand.
+			m.log.Warn("could not resolve the control plane for the kill switch",
+				"server", m.controlPlane, "error", err)
+		} else {
+			allow = append(allow, control...)
+		}
+	}
+
+	return m.killSwitch.Engage(ctx, m.iface, allow)
 }
 
 // Down stops the tunnel. Succeeds when nothing was running.
@@ -204,6 +306,13 @@ func (m *Manager) Down(ctx context.Context) error {
 	// showing "connected" after a failed teardown is the dangerous direction,
 	// because the user would believe they are protected.
 	m.setStage(protocol.StageDisconnecting, "")
+
+	// Before the interface goes, so there is no window where the tunnel is
+	// gone and the block is still up. A user who pressed Disconnect wants
+	// their ordinary connection back, not a machine with no network.
+	if err := m.killSwitch.Release(ctx); err != nil {
+		m.log.Error("could not remove the traffic block", "error", err)
+	}
 
 	if err := m.driver.Down(ctx, m.iface); err != nil {
 		m.log.Error("tunnel down failed", "interface", m.iface, "error", err)

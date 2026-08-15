@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -33,8 +34,10 @@ func main() {
 		iface      = flag.String("interface", "vpn0", "name of the WireGuard interface to manage")
 		configDir  = flag.String("config-dir", tunnel.DefaultConfigDir(), "directory for the tunnel configuration")
 		mock       = flag.Bool("mock", false, "simulate the tunnel instead of touching a real interface")
-		verbose    = flag.Bool("verbose", false, "log at debug level")
-		showVer    = flag.Bool("version", false, "print the version and exit")
+		killSwitch = flag.Bool("kill-switch", false,
+			"block traffic that is not going through the tunnel (Linux; Windows does this itself)")
+		verbose = flag.Bool("verbose", false, "log at debug level")
+		showVer = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
 
@@ -54,7 +57,7 @@ func main() {
 	// running. From a console the signal handling below is the whole story.
 	if isWindowsService() {
 		serve := func(ctx context.Context) error {
-			return run(ctx, log, *socketPath, *iface, *configDir, *mock)
+			return run(ctx, log, *socketPath, *iface, *configDir, *mock, *killSwitch)
 		}
 		if err := runService(log, serviceName, serve); err != nil {
 			log.Error("vpnd stopped", "error", err)
@@ -66,7 +69,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, log, *socketPath, *iface, *configDir, *mock); err != nil {
+	if err := run(ctx, log, *socketPath, *iface, *configDir, *mock, *killSwitch); err != nil {
 		log.Error("vpnd stopped", "error", err)
 		os.Exit(1)
 	}
@@ -76,7 +79,12 @@ func main() {
 // start, and a mismatch is rejected before Execute ever runs.
 const serviceName = "vpnd"
 
-func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir string, mock bool) error {
+func run(
+	ctx context.Context,
+	log *slog.Logger,
+	socketPath, iface, configDir string,
+	mock, killSwitch bool,
+) error {
 	var driver tunnel.Driver
 	if mock {
 		log.Warn("mock driver active — no real tunnel will be configured")
@@ -88,6 +96,15 @@ func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir str
 	}
 
 	manager := tunnel.NewManager(driver, iface, log)
+	manager.SetKillSwitch(chooseKillSwitch(killSwitch, mock))
+
+	// Before anything can connect. A previous run that crashed with the rules
+	// installed leaves a machine with no network and nothing on screen to
+	// explain it, so a fresh process clears that first — whether or not the
+	// kill switch is enabled this time.
+	if err := manager.ReleaseKillSwitch(ctx); err != nil {
+		log.Error("could not clear a previous traffic block", "error", err)
+	}
 
 	// Where the device identity lives. Beside the tunnel config on purpose:
 	// one directory to lock down, and the mock driver writes to neither.
@@ -103,6 +120,7 @@ func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir str
 		"socket", socketPath,
 		"interface", iface,
 		"driver", driver.Name(),
+		"killSwitch", manager.KillSwitchName(),
 		"version", ipc.Version)
 
 	serveErr := make(chan error, 1)
@@ -123,4 +141,27 @@ func run(ctx context.Context, log *slog.Logger, socketPath, iface, configDir str
 	manager.Shutdown(shutdownCtx)
 
 	return nil
+}
+
+// chooseKillSwitch picks the leak protection for this platform.
+//
+// Windows gets none from us on purpose: wireguard.exe already installs WFP
+// filters that drop untunneled traffic for the configs this daemon accepts.
+// A second mechanism would be another way to strand a machine offline without
+// blocking anything the first one does not.
+func chooseKillSwitch(enabled, mock bool) tunnel.KillSwitch {
+	switch {
+	case mock:
+		// The mock driver never touches a real interface; touching a real
+		// firewall from it would be a surprising way to lose a network.
+		return tunnel.NoKillSwitch{Reason: "mock driver"}
+	case !enabled:
+		return tunnel.NoKillSwitch{Reason: "not enabled"}
+	case runtime.GOOS == "windows":
+		return tunnel.NoKillSwitch{Reason: "wireguard.exe blocks untunneled traffic itself"}
+	case runtime.GOOS == "linux":
+		return tunnel.NewNftKillSwitch()
+	default:
+		return tunnel.NoKillSwitch{Reason: "not implemented on " + runtime.GOOS}
+	}
 }

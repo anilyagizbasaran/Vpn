@@ -18,6 +18,19 @@ func realRunner(ctx context.Context, name string, args ...string) ([]byte, error
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
+// ScriptRunner executes a command with input on stdin.
+//
+// Separate from [Runner] because the ruleset is a document, not an argument:
+// nft reads it from stdin, and putting a multi-line script on a root command
+// line would be both fragile and a place for a quoting mistake to matter.
+type ScriptRunner func(ctx context.Context, stdin, name string, args ...string) ([]byte, error)
+
+func realScriptRunner(ctx context.Context, stdin, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	return cmd.CombinedOutput()
+}
+
 // ExecDriver drives the official WireGuard tooling.
 //
 // It shells out rather than speaking netlink directly for the same reason the

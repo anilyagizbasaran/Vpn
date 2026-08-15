@@ -2,6 +2,8 @@ package ipc
 
 import (
 	"context"
+	"net"
+	"net/url"
 
 	"vpnd/internal/enroll"
 	"vpnd/internal/protocol"
@@ -42,7 +44,7 @@ func (s *Server) enrol(ctx context.Context, params protocol.EnrollParams) (any, 
 		return nil, &protocol.Error{Code: protocol.CodeBadRequest, Message: err.Error()}
 	}
 
-	if err := s.bringUp(ctx, result); err != nil {
+	if err := s.bringUp(ctx, address, result); err != nil {
 		return nil, err
 	}
 
@@ -171,7 +173,7 @@ func (s *Server) reconnectFromIdentity(ctx context.Context) (any, *protocol.Erro
 		return nil, &protocol.Error{Code: protocol.CodeBadRequest, Message: err.Error()}
 	}
 
-	if err := s.bringUp(ctx, result); err != nil {
+	if err := s.bringUp(ctx, stored.ControlPlane, result); err != nil {
 		return nil, err
 	}
 	return s.status(), nil
@@ -182,8 +184,14 @@ func (s *Server) reconnectFromIdentity(ctx context.Context) (any, *protocol.Erro
 // It goes through the same validation as one handed in over IPC. The config
 // came from a server the user named, which is not the same as a server that
 // can be trusted to put a PostUp hook in front of a process running as root.
-func (s *Server) bringUp(ctx context.Context, result enroll.Result) *protocol.Error {
+func (s *Server) bringUp(ctx context.Context, controlPlane string, result enroll.Result) *protocol.Error {
 	config := tunnel.NormalizeConfig(result.Config)
+
+	// Told before the tunnel comes up, so the kill switch can carve out the
+	// one address a dropped tunnel has to reach to rebuild itself.
+	if host := controlPlaneHostPort(controlPlane); host != "" {
+		s.manager.SetControlPlane(host)
+	}
 	if err := tunnel.ValidateConfig(config); err != nil {
 		s.log.Warn("rejected a configuration from the control plane",
 			"config", protocol.RedactConfig(config))
@@ -196,4 +204,26 @@ func (s *Server) bringUp(ctx context.Context, result enroll.Result) *protocol.Er
 		return asProtocolError(err)
 	}
 	return nil
+}
+
+// controlPlaneHostPort turns a control-plane URL into the host:port the kill
+// switch needs, defaulting to 443 because the address is required to be https.
+//
+// Returns empty rather than guessing when the URL cannot be parsed: a wrong
+// carve-out is worse than none, and none only costs a manual reconnect.
+func controlPlaneHostPort(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+
+	port := parsed.Port()
+	if port == "" {
+		port = "443"
+	}
+	return net.JoinHostPort(parsed.Hostname(), port)
 }

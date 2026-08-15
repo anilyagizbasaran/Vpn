@@ -15,6 +15,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+#
+# Add --kill-switch to block traffic that is not going through the tunnel.
+# Off by default because it is the one setting that can leave a machine with no
+# network: it needs nftables, and a rule that fails to come off strands whoever
+# is at the keyboard. `sudo nft delete table inet vpnkill` undoes it by hand,
+# and vpnd clears any leftover block every time it starts.
+#
+# Windows does not use this. wireguard.exe already installs WFP filters that
+# drop untunneled traffic for the configs this daemon accepts.
 ExecStart=/usr/local/bin/vpnd --interface vpn0
 Restart=on-failure
 RestartSec=3

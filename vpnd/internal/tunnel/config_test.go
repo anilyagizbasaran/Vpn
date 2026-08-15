@@ -155,3 +155,32 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+// The Windows kill switch is not something this daemon implements — it is
+// something it must not break.
+//
+// wireguard.exe installs WFP filters that drop untunneled traffic, but only
+// when three things hold at once (wireguard-windows, tunnel/addressconfig.go,
+// enableFirewall): exactly one peer, no Table key, and an AllowedIPs entry
+// that is a default route. All three are properties of the config this daemon
+// accepts, so any of them could be relaxed here by someone who had no idea
+// they were switching off leak protection on every Windows client.
+//
+// Two of them are already enforced — Table is rejected outright, and a config
+// with no peer at all is refused. This pins the third.
+func TestConfigsThatKeepTheWindowsKillSwitch(t *testing.T) {
+	if !allowedKeys["peer"]["allowedips"] {
+		t.Fatal("AllowedIPs is no longer accepted; no Windows client can route anything")
+	}
+	if allowedKeys["interface"]["table"] {
+		t.Fatal("Table is accepted again; Table = off disables the Windows kill switch")
+	}
+
+	// A default route survives validation, so the filters get installed.
+	full := "[Interface]\nPrivateKey = k\nAddress = 10.8.0.2/32\n" +
+		"\n[Peer]\nPublicKey = p\nAllowedIPs = 0.0.0.0/0,::/0\n" +
+		"Endpoint = vpn.test:51820\n"
+	if err := ValidateConfig(NormalizeConfig(full)); err != nil {
+		t.Fatalf("a full-tunnel config was rejected: %v", err)
+	}
+}

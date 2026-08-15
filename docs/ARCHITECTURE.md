@@ -200,6 +200,18 @@ kept off the bridge: the first hands out a device token, the second is
 destructive and machine-wide. `cmd/vpn-browser-host` asserts both in a test —
 the allowlist is the boundary, so it is checked rather than trusted.
 
+**The kill switch is per platform, and Windows already has one.**
+`wireguard.exe` installs WFP filters that drop untunneled traffic whenever the
+config has one peer, no `Table` key and a default route — all three are pinned
+by `internal/tunnel/config_test.go`, because relaxing any of them here would
+switch off leak protection on every Windows client without touching a line of
+firewall code. Linux has nothing equivalent: wg-quick sets up policy routing
+but no filtering, so `--kill-switch` installs an nftables table that denies by
+default. It is off by default, it carves out loopback, DHCP, the LAN, the
+WireGuard endpoint and the control plane, and vpnd clears any leftover block at
+startup — a daemon that crashed with the rules installed would otherwise leave
+a machine with no network and nothing on screen to explain it.
+
 **Unknown is not "off".** The extension badge shows `?` when it cannot reach the
 daemon, and a node whose liveness is unknown reports `online: false`. Saying
 "off" while unprotected is correct; saying "off" while unknown is misleading.

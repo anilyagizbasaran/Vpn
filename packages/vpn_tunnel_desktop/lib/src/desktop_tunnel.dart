@@ -151,6 +151,25 @@ class DesktopTunnel implements Tunnel {
     _emitFromStatus(status);
   }
 
+  /// Asks the daemon to bring the tunnel up from the identity it holds.
+  ///
+  /// This is the normal path on desktop. The daemon enrolled this machine and
+  /// kept the private key, so it can fetch a fresh config itself — the app
+  /// could not build one even if it wanted to. Falls back to false when the
+  /// daemon has no identity, which is a machine set up by an older version of
+  /// the app that still holds its own key.
+  @override
+  Future<bool> startFromOwnIdentity() async {
+    final client = await _ensureClient();
+    try {
+      _emitFromStatus(await client.call('reconnect'));
+      return true;
+    } on TunnelException catch (error) {
+      if (error.cause == 'unsupported') return false;
+      rethrow;
+    }
+  }
+
   @override
   Future<void> stop() async {
     final client = await _ensureClient();

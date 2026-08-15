@@ -35,6 +35,8 @@ class VpnController extends ChangeNotifier {
   StreamSubscription<TunnelStage>? _stageSubscription;
 
   TunnelStage _stage = TunnelStage.disconnected;
+  PublicAddress? _publicAddress;
+  bool _checkingAddress = false;
   VpnAction _action = VpnAction.idle;
   String? _error;
   Device? _device;
@@ -43,6 +45,13 @@ class VpnController extends ChangeNotifier {
   bool _initialized = false;
 
   TunnelStage get stage => _stage;
+
+  /// What the internet sees for this device, or null until it has been asked.
+  ///
+  /// Refreshed whenever the tunnel comes up or goes down, because that is
+  /// exactly when the answer changes and exactly when somebody looks.
+  PublicAddress? get publicAddress => _publicAddress;
+  bool get checkingAddress => _checkingAddress;
   VpnAction get action => _action;
   String? get error => _error;
   Device? get device => _device;
@@ -90,12 +99,21 @@ class VpnController extends ChangeNotifier {
     try {
       await _tunnel.initialize();
       _stageSubscription = _tunnel.stages.listen((stage) {
+        final was = _stage;
         _stage = stage;
         if (stage == TunnelStage.permissionDenied) {
           _error =
               'The system VPN profile was not allowed. Approve the prompt, then try again.';
         }
         notifyListeners();
+
+        // Settled states only. Asking mid-handshake would answer about the
+        // route that is on its way out and then look wrong for a few seconds.
+        if (stage != was &&
+            (stage == TunnelStage.connected ||
+                stage == TunnelStage.disconnected)) {
+          unawaited(refreshPublicAddress());
+        }
       });
       _stage = await _tunnel.currentStage();
     } on TunnelException catch (error) {
@@ -104,6 +122,25 @@ class VpnController extends ChangeNotifier {
 
     await _loadAccount();
     notifyListeners();
+    unawaited(refreshPublicAddress());
+  }
+
+  /// Asks the server what address it sees. Failure is silent by design: this
+  /// is a line of information, and a VPN that pops an error because it could
+  /// not display one would be worse than one that shows nothing.
+  Future<void> refreshPublicAddress() async {
+    if (_checkingAddress) return;
+    _checkingAddress = true;
+    notifyListeners();
+
+    try {
+      _publicAddress = await _devices.whereAmI();
+    } on ApiException {
+      _publicAddress = null;
+    } finally {
+      _checkingAddress = false;
+      notifyListeners();
+    }
   }
 
   Future<void> _loadAccount() async {
@@ -260,6 +297,12 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Asked first, because on desktop the answer is yes and the app has no
+      // private key to build a config with — the daemon enrolled this machine
+      // and kept it. Everywhere else this is a cheap false and the old path
+      // runs unchanged.
+      if (await _tunnel.startFromOwnIdentity()) return;
+
       final config = await _prepareConfig();
 
       _action = VpnAction.connecting;
@@ -363,6 +406,7 @@ class VpnController extends ChangeNotifier {
 
     _device = null;
     _servers = const [];
+    _publicAddress = null;
     _selectedServerId = null;
     _error = null;
     _action = VpnAction.idle;

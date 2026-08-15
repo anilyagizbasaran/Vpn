@@ -38,6 +38,7 @@ Future<void> main() async {
   // The one line that differs between platforms. Everything above the tunnel
   // contract — controllers, storage, rotation policy, UI — is identical.
   final Tunnel tunnel;
+  MachineEnrolment? machine;
   if (AppConfig.hasMobileTunnel) {
     tunnel = MobileTunnel(
       interfaceName: AppConfig.interfaceName,
@@ -46,6 +47,9 @@ Future<void> main() async {
     );
   } else if (AppConfig.hasDesktopTunnel) {
     tunnel = DesktopTunnel();
+    // The daemon owns this computer's identity, so the app and the browser
+    // extension are one device rather than two — whichever set it up first.
+    machine = DaemonEnrolment();
   } else {
     tunnel = UnsupportedTunnel(AppConfig.deviceLabel);
   }
@@ -64,8 +68,12 @@ Future<void> main() async {
     repository: EnrollmentRepository(api: api, store: store),
     session: store,
     devices: store,
+    machine: machine,
   );
   enrol.onSessionEnd = vpn.endSession;
+  // Adopting an identity means adopting the server that issued it. Without
+  // this the app would hold a working token and point it at the wrong place.
+  enrol.onControlPlane = serverAddress.adopt;
   // A 401 means the server no longer knows this device, so the app has to go
   // back to the enrolment screen rather than retry into the same wall.
   api.onSessionExpired = () => enrol.handleRevoked();

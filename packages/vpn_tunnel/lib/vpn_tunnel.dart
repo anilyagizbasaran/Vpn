@@ -5,4 +5,5 @@
 /// and the desktop daemon client are interchangeable from its perspective.
 library;
 
+export 'src/machine_enrolment.dart';
 export 'src/tunnel.dart';

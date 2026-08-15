@@ -111,6 +111,11 @@ class MobileTunnel implements Tunnel {
     }
   }
 
+  /// The app holds this device's key on mobile — there is no daemon to hold
+  /// it instead — so there is never a config the tunnel could fetch by itself.
+  @override
+  Future<bool> startFromOwnIdentity() async => false;
+
   @override
   Future<void> stop() async {
     try {

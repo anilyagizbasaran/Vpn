@@ -154,3 +154,23 @@ func TestFramingRoundTrips(t *testing.T) {
 		t.Fatalf("round trip lost data: %+v", decoded)
 	}
 }
+
+func TestTheExtensionCannotAskForTheCredential(t *testing.T) {
+	// The daemon will hand its device token to a local caller, so the desktop
+	// app can read its own device instead of enrolling a second one. A browser
+	// extension is not a local app in the sense that matters: anything that can
+	// talk to the extension can talk through this bridge.
+	//
+	// The allowlist is the boundary, so it is checked here rather than trusted.
+	for _, action := range []string{"identity", "forget", "up", "subscribe"} {
+		if _, ok := methodFor(action); ok {
+			t.Errorf("the browser host exposes %q", action)
+		}
+	}
+
+	for _, action := range []string{"status", "connect", "disconnect", "enroll"} {
+		if _, ok := methodFor(action); !ok {
+			t.Errorf("the browser host no longer exposes %q", action)
+		}
+	}
+}

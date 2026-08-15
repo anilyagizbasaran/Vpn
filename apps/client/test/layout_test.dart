@@ -48,6 +48,9 @@ class _FakeTunnel implements Tunnel {
   }) async {}
 
   @override
+  Future<bool> startFromOwnIdentity() async => false;
+
+  @override
   Future<void> stop() async {}
 
   @override
@@ -168,7 +171,12 @@ void main() {
       expect(find.text('Server'), findsOneWidget);
       expect(find.text('vpn.example.com'), findsOneWidget);
       expect(find.text('Region'), findsOneWidget);
-      expect(find.text('Tunnel IP'), findsOneWidget);
+
+      // Disconnected, so it offers to tell you your own address rather than
+      // the VPN's. The value is a dash until the server answers, which it
+      // cannot do in a test.
+      expect(find.text('Your IP'), findsOneWidget);
+      expect(find.text('VPN IP'), findsNothing);
       expect(find.byIcon(Icons.power_settings_new_rounded), findsOneWidget);
     });
   });

@@ -199,6 +199,12 @@ func (s *Server) dispatch(ctx context.Context, request protocol.Request) (any, *
 		}
 		return s.status(), nil
 
+	case protocol.MethodIdentity:
+		return s.identityFor()
+
+	case protocol.MethodForget:
+		return s.forget(ctx)
+
 	case protocol.MethodEnroll:
 		var params protocol.EnrollParams
 		if err := json.Unmarshal(request.Params, &params); err != nil {

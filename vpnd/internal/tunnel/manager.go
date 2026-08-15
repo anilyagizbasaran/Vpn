@@ -64,6 +64,18 @@ func (m *Manager) SetRememberConfig(remember bool) {
 	}
 }
 
+// ForgetConfig drops the config held for [Reconnect].
+//
+// Called when this machine's identity is erased. Leaving it behind would let
+// the tunnel come back up on credentials the server has already deleted, and
+// report the machine as still set up.
+func (m *Manager) ForgetConfig() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastConfig = ""
+	m.lastServer = ""
+}
+
 // CanReconnect reports whether a config is held for [Reconnect].
 func (m *Manager) CanReconnect() bool {
 	m.mu.Lock()

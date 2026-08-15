@@ -39,6 +39,9 @@ class UnsupportedTunnel implements Tunnel {
   }
 
   @override
+  Future<bool> startFromOwnIdentity() async => false;
+
+  @override
   Future<void> stop() async {}
 
   @override

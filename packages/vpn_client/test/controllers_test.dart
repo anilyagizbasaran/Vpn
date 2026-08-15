@@ -649,4 +649,137 @@ void main() {
       expect(await store.readPeerPrivateKey(), privateKey);
     });
   });
+
+  group('a machine that enrols on the app\'s behalf', () {
+    // Desktop. The daemon holds the key so the browser extension can connect
+    // without one, which means the app must not enrol a second time: same
+    // computer, two rows on the server, and an invite code typed twice.
+    late FakeMachine machine;
+    late EnrollController shared;
+
+    setUp(() {
+      machine = FakeMachine();
+      shared = EnrollController(
+        repository: EnrollmentRepository(api: api, store: store),
+        session: store,
+        devices: store,
+        machine: machine,
+      );
+    });
+
+    test('adopts an identity this machine already holds', () async {
+      machine.stored = const MachineIdentity(
+        controlPlane: base,
+        deviceToken: 'vpndev_from_extension',
+      );
+
+      await shared.bootstrap();
+
+      expect(shared.status, EnrollStatus.enrolled);
+      expect(await store.readDeviceToken(), 'vpndev_from_extension');
+    });
+
+    test('adopts the server that issued the identity', () async {
+      final adopted = <String>[];
+      shared.onControlPlane = (address) async => adopted.add(address);
+      machine.stored = const MachineIdentity(
+        controlPlane: 'https://elsewhere.example.com',
+        deviceToken: 'vpndev_from_extension',
+      );
+
+      await shared.bootstrap();
+
+      // A token issued by one control plane means nothing to another. Getting
+      // this backwards produces a 401 on every call and no clue why.
+      expect(adopted, ['https://elsewhere.example.com']);
+    });
+
+    test('shows the setup screen when the machine has no identity', () async {
+      await shared.bootstrap();
+
+      expect(shared.status, EnrollStatus.notEnrolled);
+      expect(await store.readDeviceToken(), isNull);
+    });
+
+    test('shows the setup screen when the daemon cannot be reached', () async {
+      machine.identityError = const TunnelException('no daemon');
+
+      await shared.bootstrap();
+
+      expect(shared.status, EnrollStatus.notEnrolled);
+    });
+
+    test('enrols through the machine rather than registering a key', () async {
+      final ok = await shared.enrol(
+        inviteToken: '  ABCD234567  ',
+        serverAddress: base,
+      );
+
+      expect(ok, isTrue);
+      expect(shared.status, EnrollStatus.enrolled);
+      expect(machine.enrolments.single.serverAddress, base);
+      expect(machine.enrolments.single.inviteToken, 'ABCD234567');
+      expect(await store.readDeviceToken(), 'vpndev_from_daemon');
+
+      // The point of the whole arrangement: no second device on the server,
+      // and no key in this process at all.
+      expect(http.callCount('POST', '/enroll'), 0);
+      expect(await store.readPeerPrivateKey(), isNull);
+    });
+
+    test('reports what the daemon said when a code is refused', () async {
+      machine.enrolError = const TunnelException('That code is not valid.');
+
+      final ok = await shared.enrol(inviteToken: 'nope', serverAddress: base);
+
+      expect(ok, isFalse);
+      expect(shared.error, 'That code is not valid.');
+      // Left at [checking] the app shows a spinner over an error nobody can
+      // dismiss.
+      expect(shared.status, EnrollStatus.notEnrolled);
+      expect(shared.isBusy, isFalse);
+    });
+
+    test('removing the device erases the machine copy too', () async {
+      machine.stored = const MachineIdentity(
+        controlPlane: base,
+        deviceToken: 'vpndev_from_extension',
+      );
+      await shared.bootstrap();
+      http.enqueue('DELETE', '/device', status: 204);
+
+      expect(await shared.removeDevice(), isTrue);
+
+      // Clearing only the app would leave the daemon holding a credential the
+      // server has deleted, reconnecting the extension into a 401 forever.
+      expect(machine.forgetCalls, 1);
+      expect(shared.status, EnrollStatus.notEnrolled);
+      expect(await store.readDeviceToken(), isNull);
+    });
+
+    test('asks for an address before spending the code', () async {
+      final ok = await shared.enrol(inviteToken: 'code', serverAddress: '');
+
+      expect(ok, isFalse);
+      expect(machine.enrolments, isEmpty);
+      expect(shared.error, contains('address'));
+    });
+  });
+
+  group('a tunnel that holds its own identity', () {
+    test('connect lets the tunnel bring itself up', () async {
+      await enrolled();
+      tunnel.ownIdentity = true;
+      http.enqueue('GET', '/servers', body: {'servers': []});
+
+      await vpn.initialize();
+      await vpn.connect();
+
+      expect(tunnel.ownIdentityStarts, 1);
+      // No config was prepared, because there is no private key here to
+      // prepare one with — the daemon has it.
+      expect(tunnel.startedConfigs, isEmpty);
+      expect(vpn.error, isNull);
+    });
+  });
 }

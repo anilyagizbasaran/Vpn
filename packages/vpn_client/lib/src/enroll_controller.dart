@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:vpn_api/vpn_api.dart';
 import 'package:vpn_crypto/vpn_crypto.dart';
+import 'package:vpn_tunnel/vpn_tunnel.dart';
 
 import 'device_store.dart';
 import 'session_end_reason.dart';
@@ -22,13 +23,24 @@ class EnrollController extends ChangeNotifier {
     required EnrollmentRepository repository,
     required SessionStore session,
     required DeviceStore devices,
+    MachineEnrolment? machine,
   }) : _repository = repository,
        _session = session,
-       _devices = devices;
+       _devices = devices,
+       _machine = machine;
 
   final EnrollmentRepository _repository;
   final SessionStore _session;
   final DeviceStore _devices;
+
+  /// Set on platforms where something other than this app owns the machine's
+  /// identity — desktop, where the daemon holds the key so the browser
+  /// extension can connect without one. Null elsewhere.
+  final MachineEnrolment? _machine;
+
+  /// Invoked with the control plane a machine turned out to be enrolled
+  /// against, so the app points at the same server its tunnel does.
+  Future<void> Function(String address)? onControlPlane;
 
   /// Invoked when the device stops being recognised, so the tunnel it
   /// authorised can be torn down rather than left running on a dead config.
@@ -56,16 +68,62 @@ class EnrollController extends ChangeNotifier {
   /// real request, which is what [onSessionEnd] is for.
   Future<void> bootstrap() async {
     final token = await _session.readDeviceToken();
-    _status = token == null ? EnrollStatus.notEnrolled : EnrollStatus.enrolled;
+    if (token != null) {
+      _status = EnrollStatus.enrolled;
+      notifyListeners();
+      return;
+    }
+
+    // Nothing stored, but this machine may already be set up — the browser
+    // extension enrolled it, or an earlier install of this app did. Adopting
+    // that is the difference between one device and two.
+    _status = await _adoptMachineIdentity()
+        ? EnrollStatus.enrolled
+        : EnrollStatus.notEnrolled;
     notifyListeners();
   }
 
-  Future<bool> enrol({required String inviteToken}) async {
+  /// Takes over the credential this machine already holds, if it holds one.
+  ///
+  /// Only the token: the private key stays in the daemon, which is what keeps
+  /// the app from being one more place a key can leak from.
+  Future<bool> _adoptMachineIdentity() async {
+    final machine = _machine;
+    if (machine == null) return false;
+
+    try {
+      final identity = await machine.identity();
+      if (identity == null) return false;
+
+      // The address first. A token issued by one control plane means nothing
+      // to another, and pointing the app at the wrong one turns every later
+      // call into an unexplained 401.
+      await onControlPlane?.call(identity.controlPlane);
+      await _session.saveDeviceToken(identity.deviceToken);
+      return true;
+    } on Object {
+      // No daemon, or one too old to answer. The setup screen is the right
+      // place to land, and it still works — enrolment falls back to this app.
+      return false;
+    }
+  }
+
+  Future<bool> enrol({
+    required String inviteToken,
+    String? serverAddress,
+  }) async {
     _busy = true;
     _error = null;
     notifyListeners();
 
     try {
+      if (_machine != null) {
+        return await _enrolMachine(
+          inviteToken: inviteToken.trim(),
+          serverAddress: serverAddress,
+        );
+      }
+
       // Generated before the call and stored after it succeeds. Storing first
       // would leave a private key for a device the server rejected; storing
       // never would leave a registered device whose key we lost.
@@ -101,6 +159,38 @@ class EnrollController extends ChangeNotifier {
     }
   }
 
+  /// Hands enrolment to whatever owns this machine's identity.
+  ///
+  /// No keypair is generated here on purpose. The daemon makes one, sends the
+  /// public half and keeps the private half, so this computer is a single
+  /// device however the user set it up — through the app, or through the
+  /// browser extension, or one after the other.
+  Future<bool> _enrolMachine({
+    required String inviteToken,
+    required String? serverAddress,
+  }) async {
+    if (serverAddress == null || serverAddress.isEmpty) {
+      _error = 'Enter the address of your VPN server.';
+      if (_status != EnrollStatus.enrolled) _status = EnrollStatus.notEnrolled;
+      return false;
+    }
+
+    try {
+      final identity = await _machine!.enrol(
+        serverAddress: serverAddress,
+        inviteToken: inviteToken,
+      );
+      await onControlPlane?.call(identity.controlPlane);
+      await _session.saveDeviceToken(identity.deviceToken);
+      _status = EnrollStatus.enrolled;
+      return true;
+    } on TunnelException catch (error) {
+      _error = error.message;
+      if (_status != EnrollStatus.enrolled) _status = EnrollStatus.notEnrolled;
+      return false;
+    }
+  }
+
   /// Removes this device from the server, then forgets it locally.
   Future<bool> removeDevice() async {
     _busy = true;
@@ -127,6 +217,17 @@ class EnrollController extends ChangeNotifier {
     // The tunnel first: a device that is no longer registered must not be left
     // with a live tunnel the user believes is still theirs.
     await onSessionEnd?.call(reason);
+
+    // And the machine's own copy, where there is one. Clearing only this app
+    // would leave the daemon holding a credential the server has deleted,
+    // reconnecting the browser extension into a 401 forever.
+    try {
+      await _machine?.forget();
+    } on Object {
+      // Best effort. A daemon that cannot be reached must not stop the user
+      // from removing a device the server has already been told about.
+    }
+
     await _session.clearSession();
     await _devices.clearDevice();
     _status = EnrollStatus.notEnrolled;

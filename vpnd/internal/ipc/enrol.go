@@ -67,15 +67,76 @@ func (s *Server) enrol(ctx context.Context, params protocol.EnrollParams) (any, 
 // extension gets a consistent answer no matter which call it made.
 //
 // "Could connect" and "has enrolled" are not the same, and the difference is
-// visible. The desktop app enrols itself and hands the daemon a finished
-// config, so there is no identity on disk — but the daemon can still reconnect
-// from what it holds. Reporting only the stored identity would put a setup
-// form in front of someone whose tunnel is working, and they would spend a
-// second invite to fix a problem they did not have.
+// still visible. A machine set up by an older version of the app has no
+// identity on disk — the app enrolled itself and handed over a finished config
+// — but the daemon can still reconnect from what it holds. Reporting only the
+// stored identity would put a setup form in front of someone whose tunnel is
+// working, and they would spend a second invite to fix a problem they did not
+// have.
 func (s *Server) status() protocol.StatusResult {
 	result := s.manager.Status()
 	result.Enrolled = s.manager.CanReconnect() || s.canRefetch()
 	return result
+}
+
+// identityFor hands back the credential this machine enrolled with, so the
+// local app can read its own device rather than enrolling a second one.
+//
+// Never the private key. What the caller gets can fetch a config and delete
+// the device; it cannot decrypt a packet.
+func (s *Server) identityFor() (any, *protocol.Error) {
+	if s.identity == nil {
+		return nil, &protocol.Error{
+			Code:    protocol.CodeUnsupported,
+			Message: "This daemon was started without enrolment support.",
+		}
+	}
+
+	stored, err := s.identity.Load()
+	if err != nil || stored == nil {
+		return nil, &protocol.Error{
+			Code:    protocol.CodeUnsupported,
+			Message: "This computer is not set up yet. Enter your server address and invite code.",
+		}
+	}
+
+	return protocol.IdentityResult{
+		ControlPlane: stored.ControlPlane,
+		DeviceToken:  stored.DeviceToken,
+	}, nil
+}
+
+// forget takes the tunnel down and erases this machine's identity.
+//
+// The tunnel goes first. Erasing the credential while an interface is still
+// routing traffic would leave a tunnel nothing can take down through the
+// normal path, and the daemon would keep it up across a restart.
+//
+// Succeeds when there is nothing stored: the caller asked for this machine to
+// hold no identity, and it does not.
+func (s *Server) forget(ctx context.Context) (any, *protocol.Error) {
+	if err := s.manager.Down(ctx); err != nil {
+		// Nothing was running, or the interface is already gone. Neither is a
+		// reason to keep a credential the server has deleted.
+		s.log.Debug("could not take the tunnel down while forgetting", "error", err)
+	}
+
+	// Dropped as well as erased from disk: a remembered config would let the
+	// tunnel come straight back up on a device the server no longer has.
+	s.manager.ForgetConfig()
+
+	if s.identity != nil {
+		if err := s.identity.Clear(); err != nil {
+			s.log.Error("could not erase the device identity", "error", err)
+			return nil, &protocol.Error{
+				Code:    protocol.CodeInternal,
+				Message: "This computer's VPN identity could not be removed.",
+			}
+		}
+	}
+
+	s.log.Info("forgot this machine's identity")
+	return s.status(), nil
 }
 
 // canRefetch reports whether this machine has an identity it could rebuild a

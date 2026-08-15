@@ -159,4 +159,46 @@ describe('operational endpoints', () => {
     const res = await request(app).get('/nope').expect(404);
     expect(res.body.error.code).toBe('not_found');
   });
+
+  describe('whoami', () => {
+    it('answers with the address it saw, and stores nothing', async () => {
+      const device = await enrolDevice(app, container);
+
+      const res = await request(app)
+        .get('/whoami')
+        .set(auth(device.deviceToken))
+        .set('X-Forwarded-For', '203.0.113.9')
+        .expect(200);
+
+      expect(res.body).toEqual({
+        ip: '203.0.113.9',
+        throughTunnel: false,
+        region: null,
+      });
+      // It is the caller's own address handed back, not a record. A cached
+      // copy on a proxy would be one anyway.
+      expect(res.headers['cache-control']).toContain('no-store');
+    });
+
+    it('reports the node address when the request came through the tunnel',
+      async () => {
+        const device = await enrolDevice(app, container);
+
+        // 10.8.0.x is inside the node's pool, so this request arrived through
+        // it — and what the internet sees for that client is the node.
+        const res = await request(app)
+          .get('/whoami')
+          .set(auth(device.deviceToken))
+          .set('X-Forwarded-For', '10.8.0.7')
+          .expect(200);
+
+        expect(res.body.throughTunnel).toBe(true);
+        expect(res.body.ip).not.toBe('10.8.0.7');
+        expect(res.body.ip).not.toContain(':');
+      });
+
+    it('is behind the device token', async () => {
+      await request(app).get('/whoami').expect(401);
+    });
+  });
 });

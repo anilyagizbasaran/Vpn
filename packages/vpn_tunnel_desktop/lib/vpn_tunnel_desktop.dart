@@ -7,5 +7,6 @@ library;
 
 export 'src/daemon_client.dart'
     show DaemonClient, DaemonStage, kProtocolVersion;
+export 'src/daemon_enrolment.dart' show DaemonEnrolment;
 export 'src/desktop_tunnel.dart'
     show DesktopTunnel, defaultSocketPath, stageFromDaemon;

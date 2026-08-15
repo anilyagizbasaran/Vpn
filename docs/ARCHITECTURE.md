@@ -11,7 +11,7 @@ Compromising any one component should not be enough.
 |---|---|---|
 | Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Private keys. It never touches WireGuard |
 | Node agent (`vpn-node-agent`) | How to change the interface | Any token, or another node's peers |
-| Client (`apps/client`) | Its device token, **the private key** | It cannot touch the network interface (on desktop) |
+| Client (`apps/client`) | Its device token; on mobile also **the private key** | On desktop it never sees a private key — the daemon holds it |
 | Desktop service (`vpnd`) | How to bring a tunnel up, and — on desktop — the device token and **the private key** | Anything but the one control plane it was pointed at |
 | Extension (`extension/`) | Whether the tunnel is up | It cannot see or produce a config |
 
@@ -29,6 +29,13 @@ What follows from that:
 - If the extension is taken you get a status and a toggle. It holds no
   credential, which is why enrolment lives in the daemon.
 - If the GUI is taken you do not get root.
+
+**One computer is one device.** On desktop the daemon owns the machine's
+identity: it generates the keypair, keeps the private half, and the app borrows
+only the device token over the local socket. Whichever set the machine up — the
+app or the browser extension — the other adopts what is already there. The
+alternative, which this replaced, was two keypairs and two rows on the server
+for one computer, and an invite code the user had to type twice.
 
 The cost is plain: **lose the private key and the device cannot be recovered.**
 There is no copy on the server. The app deals with it by revoking the device
@@ -182,9 +189,16 @@ exactly how Tailscale's Windows client got a vulnerability. Dart's AF_UNIX
 support on Windows was measured, not assumed
 (`packages/vpn_tunnel/tool/af_unix_probe.dart`).
 
-**The extension cannot send a config.** The bridge permits exactly three
-actions: status, connect, disconnect. "Connect" re-applies the config the
-daemon already accepted in this session.
+**The extension cannot send a config.** The bridge permits exactly four
+actions: status, connect, disconnect, enroll. "Connect" re-applies the config
+the daemon already accepted in this session, or fetches a fresh one if this
+machine has enrolled.
+
+**The extension cannot read a credential or erase one.** `identity` and
+`forget` exist on the daemon socket, which is local and ACL-protected, and are
+kept off the bridge: the first hands out a device token, the second is
+destructive and machine-wide. `cmd/vpn-browser-host` asserts both in a test —
+the allowlist is the boundary, so it is checked rather than trusted.
 
 **Unknown is not "off".** The extension badge shows `?` when it cannot reach the
 daemon, and a node whose liveness is unknown reports `online: false`. Saying

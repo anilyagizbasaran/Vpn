@@ -94,6 +94,22 @@ class VpnServerAddress extends ChangeNotifier {
 
   Future<void> reset() => change(_default);
 
+  /// Points the app at the server this machine turned out to be enrolled
+  /// against, discovered rather than typed.
+  ///
+  /// Same effect as [change], different reason, and the difference matters
+  /// when reading a stack trace: nobody edited a setting here. A rejected
+  /// address is swallowed because there is no form to report it on and no
+  /// decision for the user to make — the app carries on with the address it
+  /// had, and the first request explains the problem properly.
+  Future<void> adopt(String address) async {
+    try {
+      await change(address);
+    } on ServerAddressError {
+      // A daemon enrolled against something this app will not talk to.
+    }
+  }
+
   /// Throws [ServerAddressError] with a message worth showing.
   static void validate(String value) {
     if (value.isEmpty) {

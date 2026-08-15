@@ -32,6 +32,32 @@ class VpnServer {
   );
 }
 
+/// What the internet sees for this device right now.
+///
+/// [throughTunnel] is the part worth showing: it is the server saying "this
+/// request reached me through the tunnel", which is the only confirmation
+/// that the VPN is actually carrying traffic rather than merely reporting
+/// itself as connected.
+class PublicAddress {
+  const PublicAddress({
+    required this.ip,
+    required this.throughTunnel,
+    required this.region,
+  });
+
+  final String ip;
+  final bool throughTunnel;
+
+  /// The node the traffic left from, or null when not tunnelled.
+  final String? region;
+
+  factory PublicAddress.fromJson(Map<String, dynamic> json) => PublicAddress(
+    ip: json['ip'] as String? ?? '',
+    throughTunnel: json['throughTunnel'] as bool? ?? false,
+    region: json['region'] as String?,
+  );
+}
+
 /// Where a device holds an address. One per server it can reach.
 class DeviceLocation {
   const DeviceLocation({

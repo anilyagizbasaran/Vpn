@@ -139,6 +139,11 @@ class FakeTunnel implements Tunnel {
   int initializeCalls = 0;
   bool permissionGranted = true;
 
+  /// Set by a test that wants the tunnel to bring itself up, the way the
+  /// desktop daemon does once it holds this machine's identity.
+  bool ownIdentity = false;
+  int ownIdentityStarts = 0;
+
   Object? startError;
   Object? stopError;
   Object? initializeError;
@@ -175,6 +180,15 @@ class FakeTunnel implements Tunnel {
   }
 
   @override
+  Future<bool> startFromOwnIdentity() async {
+    if (!ownIdentity) return false;
+    ownIdentityStarts += 1;
+    if (startError != null) throw startError!;
+    emit(TunnelStage.connected);
+    return true;
+  }
+
+  @override
   Future<void> stop() async {
     stopCalls += 1;
     if (stopError != null) throw stopError!;
@@ -183,4 +197,49 @@ class FakeTunnel implements Tunnel {
 
   @override
   Future<void> dispose() => _stages.close();
+}
+
+/// Stands in for vpnd: something on this machine that already holds, or can
+/// obtain, the one identity every client here shares.
+class FakeMachine implements MachineEnrolment {
+  FakeMachine({this.stored});
+
+  MachineIdentity? stored;
+
+  /// Thrown by [enrol], the way the daemon refuses a bad code.
+  Object? enrolError;
+
+  /// Thrown by [identity] — a daemon that is not running at all.
+  Object? identityError;
+
+  final List<({String serverAddress, String inviteToken})> enrolments = [];
+  int identityCalls = 0;
+
+  @override
+  Future<MachineIdentity?> identity() async {
+    identityCalls += 1;
+    if (identityError != null) throw identityError!;
+    return stored;
+  }
+
+  int forgetCalls = 0;
+
+  @override
+  Future<void> forget() async {
+    forgetCalls += 1;
+    stored = null;
+  }
+
+  @override
+  Future<MachineIdentity> enrol({
+    required String serverAddress,
+    required String inviteToken,
+  }) async {
+    enrolments.add((serverAddress: serverAddress, inviteToken: inviteToken));
+    if (enrolError != null) throw enrolError!;
+    return stored = MachineIdentity(
+      controlPlane: serverAddress,
+      deviceToken: 'vpndev_from_daemon',
+    );
+  }
 }

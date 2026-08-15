@@ -408,3 +408,90 @@ func TestReconnectPrefersTheConfigItAlreadyHas(t *testing.T) {
 		t.Fatalf("fetch calls = %d, want 0", fetched)
 	}
 }
+
+func TestIdentityHandsBackTheTokenButNeverTheKey(t *testing.T) {
+	h := newEnrolHarness(t, &stubEnroller{})
+
+	if !h.call(protocol.MethodEnroll, enrolParams("https://vpn.example.com", "code")).OK {
+		t.Fatal("enrolment failed")
+	}
+
+	response := h.call(protocol.MethodIdentity, nil)
+	if !response.OK {
+		t.Fatalf("identity failed: %+v", response.Error)
+	}
+
+	var identity protocol.IdentityResult
+	if err := json.Unmarshal(response.Result, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if identity.DeviceToken != "vpndev_stub" {
+		t.Fatalf("device token = %q", identity.DeviceToken)
+	}
+	if identity.ControlPlane != "https://vpn.example.com" {
+		t.Fatalf("control plane = %q", identity.ControlPlane)
+	}
+
+	// The point of the whole arrangement: the key stays here. A token can read
+	// a config and remove the device; it cannot decrypt a packet.
+	_, keys := h.stub.sent()
+	if strings.Contains(string(response.Result), keys.Private) {
+		t.Fatal("the private key crossed the socket")
+	}
+}
+
+func TestIdentityRefusesBeforeEnrolment(t *testing.T) {
+	h := newEnrolHarness(t, &stubEnroller{})
+
+	response := h.call(protocol.MethodIdentity, nil)
+
+	if response.OK {
+		t.Fatal("a credential was handed out before there was one")
+	}
+	if !strings.Contains(response.Error.Message, "invite code") {
+		t.Fatalf("unhelpful message: %q", response.Error.Message)
+	}
+}
+
+func TestForgetErasesTheIdentityAndTheRememberedConfig(t *testing.T) {
+	h := newEnrolHarness(t, &stubEnroller{})
+
+	if !h.call(protocol.MethodEnroll, enrolParams("https://vpn.example.com", "code")).OK {
+		t.Fatal("enrolment failed")
+	}
+
+	response := h.call(protocol.MethodForget, nil)
+	if !response.OK {
+		t.Fatalf("forget failed: %+v", response.Error)
+	}
+
+	if stored, _ := h.store.Load(); stored != nil {
+		t.Fatal("the identity survived a forget")
+	}
+
+	// Both halves matter. With the config still in memory the extension would
+	// report this machine as set up and reconnect on a device the server has
+	// already deleted.
+	var status protocol.StatusResult
+	if err := json.Unmarshal(response.Result, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Enrolled {
+		t.Fatal("a forgotten machine still reports as enrolled")
+	}
+	if status.Stage != protocol.StageDisconnected {
+		t.Fatalf("stage = %q, want disconnected", status.Stage)
+	}
+
+	if h.call(protocol.MethodIdentity, nil).OK {
+		t.Fatal("the credential was still available after a forget")
+	}
+}
+
+func TestForgetSucceedsWhenThereIsNothingToForget(t *testing.T) {
+	h := newEnrolHarness(t, &stubEnroller{})
+
+	if !h.call(protocol.MethodForget, nil).OK {
+		t.Fatal("forgetting an unenrolled machine reported a failure")
+	}
+}

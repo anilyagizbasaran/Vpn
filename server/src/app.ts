@@ -11,6 +11,7 @@ import { createRequireDevice } from './middleware/requireDevice.js';
 import { createDeviceRouter } from './routes/device.routes.js';
 import { createEnrollRouter } from './routes/enroll.routes.js';
 import { createServersRouter } from './routes/servers.routes.js';
+import { createWhoamiRouter } from './routes/whoami.routes.js';
 import { createHealthRouter } from './routes/health.routes.js';
 import { createNodeRouter } from './routes/node.routes.js';
 import type { DeviceService } from './services/deviceService.js';
@@ -79,6 +80,7 @@ export function createApp({ repos, invites, devices, nodes }: AppDependencies): 
   app.use('/enroll', createEnrollRouter(devices, invites));
   app.use('/device', createDeviceRouter(devices, requireDevice));
   app.use('/servers', createServersRouter(devices, requireDevice));
+  app.use('/whoami', createWhoamiRouter(devices, requireDevice));
 
 
   app.use(notFoundHandler);

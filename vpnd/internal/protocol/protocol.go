@@ -36,6 +36,29 @@ const (
 	// public half, and keeps the private one. That is the whole reason this
 	// method exists rather than the extension calling the API itself.
 	MethodEnroll = "enroll"
+
+	// MethodIdentity hands the caller the credential this machine enrolled
+	// with, so a local app can read its own device from the API instead of
+	// enrolling a second one.
+	//
+	// Deliberately absent from the browser host's allowlist. The desktop app
+	// is a native process running as the same user that may already drive the
+	// tunnel; a browser extension is not, and the whole reason enrolment lives
+	// in the daemon is that an extension must never hold a credential.
+	//
+	// The WireGuard private key is not included and never leaves the daemon.
+	// A device token can read a config and remove the device; it cannot
+	// decrypt anything.
+	MethodIdentity = "identity"
+
+	// MethodForget takes the tunnel down and erases this machine's identity,
+	// for when the user removes the device from the app. Without it the daemon
+	// keeps a credential the server has already deleted and reconnects into a
+	// 401 forever.
+	//
+	// Also absent from the browser host's allowlist: it is destructive, it is
+	// machine-wide, and undoing it costs an invite code.
+	MethodForget = "forget"
 )
 
 // Stage mirrors the client's TunnelStage vocabulary so the GUI can map one to
@@ -119,6 +142,12 @@ type StatusResult struct {
 	// opens, rather than making the user press Connect to discover there is
 	// nothing to connect to.
 	Enrolled bool `json:"enrolled"`
+}
+
+// IdentityResult answers [MethodIdentity]. No key material: see the method.
+type IdentityResult struct {
+	ControlPlane string `json:"controlPlane"`
+	DeviceToken  string `json:"deviceToken"`
 }
 
 // VersionResult answers [MethodVersion]. The GUI checks this on connect so a

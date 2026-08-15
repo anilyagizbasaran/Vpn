@@ -5,6 +5,11 @@
 process.env['NODE_ENV'] = 'test';
 process.env['DATABASE_PATH'] = ':memory:';
 process.env['LOG_LEVEL'] = 'error';
+// Matches production, which runs behind nginx or Caddy. At 0 Express ignores
+// X-Forwarded-For, so anything that reads the client address sees the proxy —
+// which is the bug this setting exists to prevent, and not a state worth
+// testing against.
+process.env['TRUST_PROXY'] = '1';
 
 process.env['TOKEN_PEPPER'] = 'test-token-pepper-not-used-in-production';
 

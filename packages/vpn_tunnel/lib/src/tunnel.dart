@@ -91,6 +91,19 @@ abstract interface class Tunnel {
     required String serverAddress,
   });
 
+  /// Brings the tunnel up from a config this tunnel can obtain by itself.
+  ///
+  /// Returns false when it cannot, and the caller falls back to preparing a
+  /// config and calling [start]. That is the whole contract: an implementation
+  /// that holds its own key answers true, one that has to be handed a config
+  /// answers false, and the controller above does not need to know which
+  /// platform it is on.
+  ///
+  /// Desktop is the case this exists for. The daemon owns the private key —
+  /// the app never sees it — so the app cannot build a config even though it
+  /// is perfectly able to ask for one to be brought up.
+  Future<bool> startFromOwnIdentity();
+
   Future<void> stop();
 
   /// Releases the stage stream. Called when the app shuts down.

@@ -55,6 +55,9 @@ class _EnrollScreenState extends State<EnrollScreen> {
     if (!mounted) return;
     await context.read<EnrollController>().enrol(
       inviteToken: _codeController.text,
+      // Passed rather than read back inside: on desktop the daemon does the
+      // enrolling and has no idea what the user just typed.
+      serverAddress: context.read<VpnServerAddress>().current,
     );
   }
 

@@ -31,6 +31,12 @@ class FakeDaemon {
   /// Delays the reply to `up`, so a slow daemon can be simulated.
   Duration upDelay = Duration.zero;
 
+  /// The identity this machine holds, or null when it has never enrolled.
+  Map<String, dynamic>? identity;
+
+  /// When set, `enroll` fails with this message.
+  String? enrolError;
+
   Future<void> start() async {
     final dir = await Directory.systemTemp.createTemp('vpnd_test');
     path = '${dir.path}${Platform.pathSeparator}vpnd.sock';
@@ -96,6 +102,35 @@ class FakeDaemon {
       case 'down':
         stage = DaemonStage.disconnected;
         emit(DaemonStage.disconnected);
+        ok({'stage': stage, 'interface': 'vpn0'});
+      case 'reconnect':
+        if (identity == null) {
+          fail('unsupported', 'This computer is not set up yet.');
+          return;
+        }
+        stage = DaemonStage.connected;
+        emit(DaemonStage.connected);
+        ok({'stage': stage, 'interface': 'vpn0'});
+      case 'identity':
+        if (identity == null) {
+          fail('unsupported', 'This computer is not set up yet.');
+          return;
+        }
+        ok(identity);
+      case 'enroll':
+        if (enrolError != null) {
+          fail('bad_request', enrolError!);
+          return;
+        }
+        identity = {
+          'controlPlane': request['params']['serverAddress'],
+          'deviceToken': 'vpndev_from_daemon',
+        };
+        stage = DaemonStage.connected;
+        ok({'stage': stage, 'interface': 'vpn0'});
+      case 'forget':
+        identity = null;
+        stage = DaemonStage.disconnected;
         ok({'stage': stage, 'interface': 'vpn0'});
       default:
         fail('bad_request', 'unknown method');
@@ -325,6 +360,112 @@ void main() {
       // thing to claim when the answer is not understood.
       expect(stageFromDaemon('teleporting'), TunnelStage.disconnected);
       expect(stageFromDaemon(null), TunnelStage.disconnected);
+    });
+  });
+
+  group('one identity per machine', () {
+    late DaemonEnrolment enrolment;
+
+    setUp(() => enrolment = DaemonEnrolment(socketPath: daemon.path));
+
+    test('reports no identity before this machine is set up', () async {
+      // Not an error: it is the answer that puts the setup screen on screen.
+      expect(await enrolment.identity(), isNull);
+    });
+
+    test('reports no identity when there is no daemon at all', () async {
+      final missing = DaemonEnrolment(socketPath: '${daemon.path}.absent');
+
+      expect(await missing.identity(), isNull);
+    });
+
+    test('enrolling returns the credential the daemon kept', () async {
+      final identity = await enrolment.enrol(
+        serverAddress: 'https://vpn.example.com',
+        inviteToken: 'ABCD234567',
+      );
+
+      expect(identity.controlPlane, 'https://vpn.example.com');
+      expect(identity.deviceToken, 'vpndev_from_daemon');
+
+      final sent = daemon.requests.firstWhere((r) => r['method'] == 'enroll');
+      expect(sent['params']['inviteToken'], 'ABCD234567');
+
+      // The app asks for the token separately, so the enrolment reply itself
+      // stays free of anything key-shaped — that reply also goes to the
+      // browser extension.
+      expect(jsonEncode(sent), isNot(contains('deviceToken')));
+    });
+
+    test('a refused code surfaces the daemon message', () async {
+      daemon.enrolError = 'That code is not valid.';
+
+      expect(
+        () => enrolment.enrol(
+          serverAddress: 'https://vpn.example.com',
+          inviteToken: 'nope',
+        ),
+        throwsA(
+          isA<TunnelException>().having(
+            (e) => e.message,
+            'message',
+            'That code is not valid.',
+          ),
+        ),
+      );
+    });
+
+    test('an identity the app can adopt is readable afterwards', () async {
+      await enrolment.enrol(
+        serverAddress: 'https://vpn.example.com',
+        inviteToken: 'ABCD234567',
+      );
+
+      final adopted = await enrolment.identity();
+
+      expect(adopted?.deviceToken, 'vpndev_from_daemon');
+    });
+
+    test('forgetting erases it', () async {
+      await enrolment.enrol(
+        serverAddress: 'https://vpn.example.com',
+        inviteToken: 'ABCD234567',
+      );
+
+      await enrolment.forget();
+
+      expect(await enrolment.identity(), isNull);
+    });
+
+    test('forgetting a machine with no daemon is not an error', () async {
+      final missing = DaemonEnrolment(socketPath: '${daemon.path}.absent');
+
+      await expectLater(missing.forget(), completes);
+    });
+
+    test('the tunnel brings itself up from the daemon identity', () async {
+      await enrolment.enrol(
+        serverAddress: 'https://vpn.example.com',
+        inviteToken: 'ABCD234567',
+      );
+      await tunnel.initialize();
+
+      expect(await tunnel.startFromOwnIdentity(), isTrue);
+      expect(
+        daemon.requests.where((r) => r['method'] == 'reconnect'),
+        hasLength(1),
+      );
+      // The app has no private key on desktop, so it must never be the thing
+      // that builds a config.
+      expect(daemon.requests.where((r) => r['method'] == 'up'), isEmpty);
+    });
+
+    test('falls back when the daemon holds no identity', () async {
+      await tunnel.initialize();
+
+      // A machine set up by an older app, which still holds its own key. The
+      // controller above prepares a config and calls start().
+      expect(await tunnel.startFromOwnIdentity(), isFalse);
     });
   });
 }

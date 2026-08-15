@@ -12,6 +12,7 @@ import {
 } from '../utils/errors.js';
 import { isWireGuardKey } from '../utils/validation.js';
 import { allocateAddress, PoolExhaustedError } from './ipam.js';
+import { isInCidr, parseCidr } from '../utils/ip.js';
 import { renderWgQuickConfig } from './configRenderer.js';
 import { generateKeyPair, generatePresharedKey } from './keys.js';
 
@@ -110,6 +111,45 @@ export class DeviceService {
       isDefault: server.isDefault,
       online: this.isOnline(server),
     };
+  }
+
+  /**
+   * Where a request reached us from, as the client should understand it.
+   *
+   * Two cases, and telling them apart is the whole value. A request whose
+   * source address falls inside a node's tunnel pool arrived *through* that
+   * node, so the address the rest of the internet sees for that client is the
+   * node's own — which is the answer somebody checking their VPN wants. Any
+   * other address is the client's real one, seen directly.
+   *
+   * Nothing is stored. This reads the request, compares it against the pools,
+   * and answers.
+   */
+  async whereFrom(seen: string): Promise<{
+    ip: string;
+    throughTunnel: boolean;
+    region: string | null;
+  }> {
+    for (const server of await this.repos.servers.list()) {
+      let pool;
+      try {
+        pool = parseCidr(server.addressPoolCidr);
+      } catch {
+        continue;
+      }
+      if (!isInCidr(seen, pool)) continue;
+
+      // The endpoint is `host:port` as clients dial it, and on a node that
+      // masquerades — which is every node here — the host it is dialled on is
+      // the address its traffic leaves from.
+      const host = server.endpoint.includes(':')
+        ? server.endpoint.slice(0, server.endpoint.lastIndexOf(':'))
+        : server.endpoint;
+
+      return { ip: host, throughTunnel: true, region: server.displayName };
+    }
+
+    return { ip: seen, throughTunnel: false, region: null };
   }
 
   /** The region list the app shows. Draining nodes are hidden from new picks. */

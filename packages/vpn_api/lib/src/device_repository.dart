@@ -53,4 +53,11 @@ class DeviceRepository {
   }
 
   Future<void> revoke(int deviceId) => api.delete('/device');
+
+  /// The address the internet currently sees for this device, answered by the
+  /// user's own server rather than by a third-party "what is my IP" service —
+  /// which would hand the real address to a stranger every time the app opens.
+  Future<PublicAddress> whereAmI() async {
+    return PublicAddress.fromJson(await api.get('/whoami'));
+  }
 }

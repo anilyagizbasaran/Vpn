@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:vpn_api/vpn_api.dart';
 import 'package:vpn_client/vpn_client.dart';
 import 'package:vpn_tunnel/vpn_tunnel.dart';
 
@@ -107,9 +108,8 @@ class _HomeScreenState extends State<HomeScreen> {
               _ConnectionCard(
                 serverAddress: context.watch<VpnServerAddress>().current,
                 region: vpn.selectedServer?.displayName,
-                address: vpn.device?.locations.isEmpty ?? true
-                    ? null
-                    : vpn.device!.locations.first.allowedIp,
+                publicAddress: vpn.publicAddress,
+                checking: vpn.checkingAddress,
                 connected: vpn.isConnected,
               ),
             ],
@@ -310,13 +310,15 @@ class _ConnectionCard extends StatelessWidget {
   const _ConnectionCard({
     required this.serverAddress,
     required this.region,
-    required this.address,
+    required this.publicAddress,
+    required this.checking,
     required this.connected,
   });
 
   final String serverAddress;
   final String? region;
-  final String? address;
+  final PublicAddress? publicAddress;
+  final bool checking;
   final bool connected;
 
   @override
@@ -334,10 +336,17 @@ class _ConnectionCard extends StatelessWidget {
             const Divider(height: 1),
             _Row(icon: Icons.public, label: 'Region', value: region ?? '—'),
             const Divider(height: 1),
+            // The line people actually check. `throughTunnel` is the server
+            // saying the request reached it through the tunnel, so a green
+            // address is confirmation rather than a restatement of the stage
+            // the app already thinks it is in.
             _Row(
-              icon: Icons.route_outlined,
-              label: 'Tunnel IP',
-              value: connected ? (address ?? '—') : '—',
+              icon: connected ? Icons.lock_outline : Icons.location_on_outlined,
+              label: connected ? 'VPN IP' : 'Your IP',
+              value: checking && publicAddress == null
+                  ? 'Checking...'
+                  : (publicAddress?.ip ?? '—'),
+              highlight: publicAddress?.throughTunnel ?? false,
             ),
           ],
         ),
@@ -355,11 +364,20 @@ class _ConnectionCard extends StatelessWidget {
 }
 
 class _Row extends StatelessWidget {
-  const _Row({required this.icon, required this.label, required this.value});
+  const _Row({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.highlight = false,
+  });
 
   final IconData icon;
   final String label;
   final String value;
+
+  /// Drawn in the connected colour. Used for the one value that is a claim
+  /// about the outside world rather than a setting.
+  final bool highlight;
 
   @override
   Widget build(BuildContext context) {
@@ -384,7 +402,8 @@ class _Row extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right,
               style: theme.textTheme.bodySmall?.copyWith(
-                fontWeight: FontWeight.w500,
+                fontWeight: highlight ? FontWeight.w600 : FontWeight.w500,
+                color: highlight ? VpnColors.connected : null,
               ),
             ),
           ),

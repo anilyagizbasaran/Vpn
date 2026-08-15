@@ -319,10 +319,90 @@ if [ "\$1" = "howmanydevice" ]; then
 fi
 
 cd "$INSTALL_DIR"
+
+# update runs on the host, because pulling images and restarting the stack is
+# something the container cannot do to itself.
+#
+# The shape is: back up, pull, restart, wait — and if it does not come back
+# healthy, put the old image back. Rolling the database back is deliberately
+# NOT automatic. Migrations only go forward, so an automatic restore would be
+# the one command in here that can destroy data, and it would fire on a health
+# check that failed for a reason as ordinary as a slow network. The backup path
+# is printed instead.
+if [ "\$1" = "update" ]; then
+  SITE_ADDRESS="\${SITE_ADDRESS:-$DOMAIN}"
+  export SITE_ADDRESS
+
+  echo
+  echo "  Backing up the database"
+  BACKUP="\$(docker compose exec -T api node scripts/backup.mjs 2>/dev/null | tail -1)"
+  if [ -n "\$BACKUP" ]; then
+    echo "  saved \$BACKUP"
+  else
+    echo "  could not back up; not updating." >&2
+    exit 1
+  fi
+
+  # The image currently running, so there is something to go back to. Captured
+  # by id: the :latest tag is about to point somewhere else.
+  PREVIOUS="\$(docker compose images -q api 2>/dev/null | head -1)"
+
+  echo "  Fetching the new version"
+  git pull --ff-only --quiet 2>/dev/null ||
+    echo "  (compose file not updated; continuing with the one on disk)"
+
+  if ! docker compose pull --quiet api caddy; then
+    echo "  could not fetch the images; nothing changed." >&2
+    exit 1
+  fi
+
+  echo "  Restarting"
+  docker compose up -d --no-build api caddy >/dev/null 2>&1 || true
+
+  state=starting
+  for _ in \$(seq 1 60); do
+    state="\$(docker inspect --format '{{.State.Health.Status}}' vpn-api-1 2>/dev/null || echo starting)"
+    [ "\$state" = "healthy" ] && break
+    sleep 2
+  done
+
+  if [ "\$state" = "healthy" ]; then
+    echo
+    echo "  Updated. Your code and your devices are untouched."
+    echo
+    exit 0
+  fi
+
+  echo
+  echo "  The new version did not come up. Rolling back." >&2
+  docker compose logs --tail 20 api >&2 || true
+
+  if [ -n "\$PREVIOUS" ]; then
+    docker tag "\$PREVIOUS" ghcr.io/anilyagizbasaran/vpn-control-plane:latest
+    docker compose up -d --no-build api caddy >/dev/null 2>&1 || true
+    echo "  Previous version restored." >&2
+  else
+    echo "  No previous image to restore." >&2
+  fi
+
+  echo "  The database was NOT rolled back. If the new version migrated it and" >&2
+  echo "  the old one cannot read it, restore by hand from:" >&2
+  echo "    \$BACKUP" >&2
+  echo >&2
+  exit 1
+fi
+
+# A terminal is passed through when there is one, so a command that asks
+# before doing something destructive can actually be answered. Without this
+# every run is -T, stdin is closed, and the prompt reads EOF — which would make
+# a confirmation either useless or impossible to get past.
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker compose exec api node scripts/vpn.mjs "\$@"
+fi
 exec docker compose exec -T api node scripts/vpn.mjs "\$@"
 VPNEOF
 chmod 755 /usr/local/bin/vpn
-ok "vpn status · vpn howmanydevice · vpn reset"
+ok "vpn status · vpn howmanydevice · vpn reset · vpn update"
 
 # --- first code ---------------------------------------------------------------
 
@@ -364,9 +444,10 @@ ${BOLD}Your VPN server is running.${RESET}
       ${BOLD}vpn howmanydevice${RESET}   how many are connected right now
       ${BOLD}vpn reset${RESET}           new code, devices stay connected
       ${BOLD}vpn reset --kick${RESET}    new code and remove every device
+      ${BOLD}vpn update${RESET}          pull the latest version, roll back if it fails
 
   Installed at:   $INSTALL_DIR
-  Update later:   curl -fsSL $REPO_URL/raw/main/install.sh | sudo bash
+  Update later:   ${BOLD}vpn update${RESET}
 
   Make sure your provider's firewall allows ${BOLD}$WG_PORT/udp${RESET} as well as 80 and 443.
 

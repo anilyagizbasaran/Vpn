@@ -5,6 +5,9 @@
  *   vpn howmanydevice       how many are connected right now (runs on the host)
  *   vpn reset [--kick]      new code; --kick also removes every device
  *
+ * --kick asks before it does it, and needs --yes when there is no terminal to
+ * ask on. It is the only irreversible command here.
+ *
  * There is nothing else, because there is nothing else to manage. No accounts
  * to moderate, no passwords to reset, no sessions to expire. One code lets a
  * device on; rotating it is how a code that got out stops working.
@@ -44,6 +47,33 @@ function parseArgs(argv) {
 }
 
 
+
+/**
+ * Asks before something irreversible. Answers false unless the reply is "yes".
+ *
+ * With no terminal — a script, a cron job, a pipe — this refuses rather than
+ * assuming either answer. Assuming yes would let a redirect wipe every device;
+ * assuming no would break automation silently. `--yes` is the way through, and
+ * it has to be written down.
+ */
+async function confirm(question) {
+  if (!process.stdin.isTTY) {
+    console.error(
+      `\n  This needs a terminal to confirm on. Re-run it from a shell,` +
+        `\n  or pass ${BOLD}--yes${RESET} if you meant it.\n`,
+    );
+    return false;
+  }
+
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(question);
+    return answer.trim().toLowerCase() === 'yes';
+  } finally {
+    rl.close();
+  }
+}
 
 function printCode(token) {
   console.log(`
@@ -116,6 +146,22 @@ try {
       process.exit(0);
     }
 
+    // --kick is the only irreversible thing this tool does. Every device has
+    // to be set up again afterwards, by hand, on each device — and the two
+    // commands differ by one word, so it is easy to reach for by accident.
+    if (args.kick && !args.yes) {
+      const devices = await container.repos.devices.countActiveByInvite(invite.id);
+      const confirmed = await confirm(
+        `\n  This removes ${BOLD}${devices} device${devices === 1 ? '' : 's'}${RESET}` +
+          ` and cannot be undone.\n  Each one has to be set up again with the new code.\n\n` +
+          `  Type ${BOLD}yes${RESET} to continue, or press Enter to cancel: `,
+      );
+      if (!confirmed) {
+        console.log(`\n  Cancelled. Nothing changed.\n`);
+        process.exit(1);
+      }
+    }
+
     // Order matters: devices are cut off before the new code is printed, so a
     // reset that is interrupted has removed access rather than only promised
     // to. Revoking the invite as well is deliberate belt-and-braces — rotate
@@ -148,7 +194,7 @@ try {
     vpn status              is a code set, and how many devices it enrolled
     vpn howmanydevice       how many are connected right now
     vpn reset               new code; devices stay connected
-    vpn reset --kick        new code and remove every device
+    vpn reset --kick        new code and remove every device (asks first)
 
   vpn status --quiet prints a newly created code and nothing else, for scripts.
 `);

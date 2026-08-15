@@ -26,6 +26,12 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      # install.sh generates /usr/local/bin/vpn from a heredoc, so nothing
+      # else parses it until a server runs it.
+      - name: The generated vpn command parses
+        working-directory: .
+        run: python3 server/scripts/check-vpn-command.py
+
   daemon:
     name: vpnd
     runs-on: ubuntu-latest

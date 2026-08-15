@@ -5,8 +5,6 @@ import type { DeviceService } from '../services/deviceService.js';
 import type { InviteService } from '../services/inviteService.js';
 import { peerWriteLimiter } from '../middleware/rateLimiters.js';
 import { parseBody } from '../middleware/validate.js';
-import { DEVICE_PLATFORMS } from '../db/types.js';
-import { hasControlChars } from '../utils/validation.js';
 
 const publicKeySchema = z
   .string()
@@ -17,18 +15,11 @@ const enrolSchema = z.object({
   // Optional. Supplying it means the device generated the keypair itself and
   // the server never sees the private half.
   publicKey: publicKeySchema.optional(),
-  label: z
-    .string()
-    .trim()
-    .min(1, 'Device label cannot be empty')
-    .max(64, 'Device label must be at most 64 characters')
-    // A newline in a label would otherwise reach the rendered wg-quick config,
-    // where a line of its own is a directive.
-    .refine((v) => !hasControlChars(v), {
-      message: 'Device label contains control characters',
-    })
-    .optional(),
-  platform: z.enum(DEVICE_PLATFORMS).optional(),
+  // Accepted and discarded. Older clients still send a label and a platform;
+  // rejecting them would break those clients, and storing them would be a
+  // record of what somebody uses and when they started using it.
+  label: z.string().max(64).optional(),
+  platform: z.string().max(32).optional(),
 });
 
 /**
@@ -57,12 +48,8 @@ export function createEnrollRouter(devices: DeviceService, invites: InviteServic
     const result = await devices.enrolDevice(
       { inviteId: invite.id, tokenHash },
       invite.deviceLimit,
-      { label: body.label ?? 'My device', publicKey: body.publicKey, platform: body.platform },
+      { publicKey: body.publicKey },
     );
-
-    // Recorded after the device exists, so a failed enrolment does not look
-    // like a successful one in the invite list.
-    await invites.touch(invite.id);
 
     // A config carries key material; a cache anywhere on the path is a copy of
     // it nobody meant to keep.

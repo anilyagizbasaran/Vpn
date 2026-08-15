@@ -5,5 +5,7 @@
 /// a single conditional and nothing above notices the difference.
 library;
 
-export 'src/daemon_client.dart' show DaemonClient, DaemonStage, kProtocolVersion;
-export 'src/desktop_tunnel.dart' show DesktopTunnel, defaultSocketPath, stageFromDaemon;
+export 'src/daemon_client.dart'
+    show DaemonClient, DaemonStage, kProtocolVersion;
+export 'src/desktop_tunnel.dart'
+    show DesktopTunnel, defaultSocketPath, stageFromDaemon;

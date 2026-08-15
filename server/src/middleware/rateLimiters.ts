@@ -4,7 +4,11 @@ import { isTest } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 
 function limitReached(req: Request, res: Response): void {
-  logger.warn('rate limit hit', { path: req.path, ip: req.ip, requestId: req.requestId });
+  // The path, not the address. Knowing that /enroll is being hammered is
+  // operationally useful; writing down who was doing it turns a log file into
+  // a record of which addresses talked to this VPN, which is the one thing it
+  // exists not to keep.
+  logger.warn('rate limit hit', { path: req.path, requestId: req.requestId });
   res.status(429).json({
     error: { code: 'rate_limited', message: 'Too many requests. Slow down and try again later.' },
   });

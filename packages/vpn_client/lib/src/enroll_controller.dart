@@ -60,11 +60,7 @@ class EnrollController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> enrol({
-    required String inviteToken,
-    required String label,
-    required String platform,
-  }) async {
+  Future<bool> enrol({required String inviteToken}) async {
     _busy = true;
     _error = null;
     notifyListeners();
@@ -78,8 +74,6 @@ class EnrollController extends ChangeNotifier {
       final config = await _repository.enrol(
         inviteToken: inviteToken.trim(),
         publicKey: keys.publicKey,
-        label: label,
-        platform: platform,
       );
 
       await _devices.saveDevice(

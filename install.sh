@@ -297,11 +297,32 @@ cat > /usr/local/bin/vpn <<VPNEOF
 #!/bin/sh
 # Manage this VPN server. Installed by install.sh; safe to re-run.
 set -e
+
+# howmanydevice is answered by the interface, not the database. The control
+# plane deliberately stores nothing that could answer it — no last-seen time,
+# no byte counters — so the only honest source is the live handshake list, and
+# that lives in the kernel on this machine rather than in the container.
+#
+# A peer that has not completed a handshake in three minutes is not connected:
+# WireGuard is silent when idle, but PersistentKeepalive is 25 seconds, so a
+# live peer is never quiet for that long.
+if [ "\$1" = "howmanydevice" ]; then
+  echo
+  wg show wg0 latest-handshakes 2>/dev/null | awk -v now="\$(date +%s)" '
+    { total++; if (\$2 > 0 && now - \$2 < 180) connected++ }
+    END { printf "  %d connected right now, of %d enrolled\n", connected, total }'
+  echo
+  echo "  Counted from the interface, not from a log: nothing on this server"
+  echo "  records who was connected, or when."
+  echo
+  exit 0
+fi
+
 cd "$INSTALL_DIR"
 exec docker compose exec -T api node scripts/vpn.mjs "\$@"
 VPNEOF
 chmod 755 /usr/local/bin/vpn
-ok "vpn status · vpn devices · vpn revoke <id> · vpn reset"
+ok "vpn status · vpn howmanydevice · vpn reset"
 
 # --- first code ---------------------------------------------------------------
 
@@ -339,9 +360,8 @@ ${BOLD}Your VPN server is running.${RESET}
   private half never reaches this server.
 
   Managing it, from this machine:
-      ${BOLD}vpn status${RESET}          is a code set, and how many devices are on it
-      ${BOLD}vpn devices${RESET}         one line per device
-      ${BOLD}vpn revoke <id>${RESET}     cut off one device
+      ${BOLD}vpn status${RESET}          is a code set, and how many devices it enrolled
+      ${BOLD}vpn howmanydevice${RESET}   how many are connected right now
       ${BOLD}vpn reset${RESET}           new code, devices stay connected
       ${BOLD}vpn reset --kick${RESET}    new code and remove every device
 

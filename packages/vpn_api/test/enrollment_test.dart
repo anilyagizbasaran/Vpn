@@ -61,7 +61,6 @@ void main() {
     final config = await enrolment.enrol(
       inviteToken: 'ABCD123456',
       publicKey: 'mypub',
-      platform: 'linux',
     );
 
     final sent = jsonDecode(http.requests.single.body) as Map<String, dynamic>;

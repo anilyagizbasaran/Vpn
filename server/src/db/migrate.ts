@@ -365,6 +365,82 @@ export const MIGRATIONS: Migration[] = [
       -- that table and survive too, so there is nothing to recreate here.
     `,
   },
+  {
+    version: 8,
+    name: 'keep nothing but what a tunnel needs',
+    up: `
+      -- A VPN's database is a record of who was where and when, and the safest
+      -- thing to do with that record is not to have one.
+      --
+      -- What goes: device labels and platforms, every timestamp, and the whole
+      -- usage table — bytes transferred and last-handshake times, per device.
+      -- None of it is needed to carry a packet; all of it answers questions
+      -- about a person.
+      --
+      -- What stays, and why it has to:
+      --
+      --   public_key   WireGuard authenticates a peer by its key. Without it
+      --                there is no tunnel. It is not a name, but it is stable,
+      --                and pretending otherwise would be dishonest.
+      --   allowed_ip   Every peer needs an address inside the tunnel, and the
+      --                same one each time, or its traffic has nowhere to go.
+      --   token_hash   How a device fetches its own config and removes itself.
+      --                An HMAC, so the row is not a usable credential.
+      --
+      -- Revocation becomes a real DELETE rather than a revoked_at column: a
+      -- timestamp saying when somebody was cut off is exactly the kind of
+      -- history this migration exists to stop keeping.
+      DROP TABLE IF EXISTS peer_usage;
+
+      CREATE TABLE invites_v8 (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash   TEXT    NOT NULL UNIQUE,
+        device_limit INTEGER
+      );
+      INSERT INTO invites_v8 (id, token_hash, device_limit)
+        SELECT id, token_hash, device_limit FROM invites WHERE revoked_at IS NULL;
+
+      CREATE TABLE devices_v8 (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        invite_id  INTEGER NOT NULL REFERENCES invites_v8(id) ON DELETE CASCADE,
+        public_key TEXT    NOT NULL UNIQUE,
+        token_hash TEXT    NOT NULL UNIQUE
+      );
+      INSERT INTO devices_v8 (id, invite_id, public_key, token_hash)
+        SELECT d.id, d.invite_id, d.public_key, d.token_hash
+          FROM devices d
+          JOIN invites_v8 i ON i.id = d.invite_id
+         WHERE d.revoked_at IS NULL;
+
+      CREATE TABLE peers_v8 (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id         INTEGER NOT NULL REFERENCES devices_v8(id) ON DELETE CASCADE,
+        server_id         INTEGER NOT NULL REFERENCES servers(id)    ON DELETE RESTRICT,
+        allowed_ip        TEXT    NOT NULL,
+        preshared_key_enc TEXT
+      );
+      INSERT INTO peers_v8 (id, device_id, server_id, allowed_ip, preshared_key_enc)
+        SELECT p.id, p.device_id, p.server_id, p.allowed_ip, p.preshared_key_enc
+          FROM peers p
+          JOIN devices_v8 d ON d.id = p.device_id
+         WHERE p.revoked_at IS NULL;
+
+      DROP TABLE peers;
+      DROP TABLE devices;
+      DROP TABLE invites;
+      ALTER TABLE peers_v8   RENAME TO peers;
+      ALTER TABLE devices_v8 RENAME TO devices;
+      ALTER TABLE invites_v8 RENAME TO invites;
+
+      -- Plain UNIQUE now, not partial: with rows deleted rather than flagged,
+      -- there is no such thing as a dead row to exclude.
+      CREATE UNIQUE INDEX peers_ip_unique     ON peers (server_id, allowed_ip);
+      CREATE UNIQUE INDEX peers_device_server ON peers (device_id, server_id);
+      CREATE INDEX devices_by_invite ON devices (invite_id);
+      CREATE INDEX peers_by_device   ON peers (device_id);
+      CREATE INDEX peers_by_server   ON peers (server_id);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

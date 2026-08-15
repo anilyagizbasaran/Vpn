@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 
 import 'package:vpn_client/vpn_client.dart';
 
-import '../config.dart';
 import 'widgets/message_banner.dart';
 
 /// Two fields and a button: where the server is, and the code that lets this
@@ -55,8 +54,6 @@ class _EnrollScreenState extends State<EnrollScreen> {
     if (!mounted) return;
     await context.read<EnrollController>().enrol(
       inviteToken: _codeController.text,
-      label: AppConfig.deviceLabel,
-      platform: AppConfig.devicePlatform,
     );
   }
 

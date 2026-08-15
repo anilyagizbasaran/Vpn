@@ -228,12 +228,15 @@ This is how anything gets on. There is no registration page and no account.
 `install.sh` puts a `vpn` command on the server:
 
 ```bash
-vpn status          # is a code set, and how many devices are on it
-vpn devices         # one line per device
-vpn revoke 3        # cut off one device
+vpn status          # is a code set, and how many devices it enrolled
+vpn howmanydevice   # how many are connected right now
 vpn reset           # new code; devices stay connected
 vpn reset --kick    # new code and remove every device
 ```
+
+`howmanydevice` reads the WireGuard interface rather than the database, because
+the database does not know: it holds no last-seen time and no counters. The
+count is true at the moment you ask and is not recorded anywhere.
 
 Without the installer it is `cd server && npm run vpn -- status`, or under
 Docker `docker compose exec api node scripts/vpn.mjs status`.

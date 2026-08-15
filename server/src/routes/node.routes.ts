@@ -16,21 +16,11 @@ const wireGuardKey = z
 const syncSchema = z.object({
   interfacePublicKey: wireGuardKey,
   agentVersion: z.string().min(1).max(64),
-  usage: z
-    .array(
-      z.object({
-        publicKey: wireGuardKey,
-        // WireGuard counters are 64-bit; JSON numbers hold them exactly up to
-        // 2^53 bytes, which is eight petabytes per peer.
-        rxBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-        txBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-        lastHandshakeAt: z.iso.datetime().nullable().default(null),
-      }),
-    )
-    // A node with more peers than this is reporting garbage or is under
-    // attack; either way the control plane should not try to fold it in.
-    .max(10_000)
-    .default([]),
+  // Agents used to send a usage report per peer here — bytes moved and the
+  // last handshake, keyed by public key — and the control plane wrote it down.
+  // The field is still tolerated so an older agent is not rejected mid-upgrade,
+  // and it is discarded on arrival.
+  usage: z.unknown().optional(),
 });
 
 declare module 'express-serve-static-core' {
@@ -75,7 +65,7 @@ export function createNodeRouter(nodes: NodeService): Router {
         next();
       })
       .catch((error: unknown) => {
-        logger.warn('node authentication failed', { ip: req.ip });
+        logger.warn('node authentication failed');
         next(error);
       });
   };

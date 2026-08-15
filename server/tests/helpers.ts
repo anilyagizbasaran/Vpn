@@ -136,9 +136,7 @@ export async function enrolDevice(
 ): Promise<EnrolledDevice> {
   let inviteToken = options.inviteToken;
   if (!inviteToken) {
-    ({ token: inviteToken } = await container.invites.mint({
-      label: 'test',
-      deviceLimit: options.deviceLimit ?? 5,
+    ({ token: inviteToken } = await container.invites.mint({ deviceLimit: options.deviceLimit ?? 5,
     }));
   }
 

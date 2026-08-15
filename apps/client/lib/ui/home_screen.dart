@@ -156,9 +156,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
               _DetailsCard(
                 serverAddress: context.watch<VpnServerAddress>().current,
-                deviceLabel: vpn.device?.label,
                 region: vpn.selectedServer?.displayName,
-                address: vpn.device?.locations.isEmpty ?? true ? null : vpn.device!.locations.first.allowedIp,
+                address: vpn.device?.locations.isEmpty ?? true
+                    ? null
+                    : vpn.device!.locations.first.allowedIp,
               ),
             ],
           ),
@@ -168,7 +169,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Color? _statusColor(ThemeData theme, VpnController vpn) {
-    if (vpn.stage == TunnelStage.permissionDenied) return theme.colorScheme.error;
+    if (vpn.stage == TunnelStage.permissionDenied) {
+      return theme.colorScheme.error;
+    }
     if (vpn.isConnected) return const Color(0xFF1B873F);
     return theme.colorScheme.onSurface;
   }
@@ -237,13 +240,11 @@ class _ConnectButton extends StatelessWidget {
 class _DetailsCard extends StatelessWidget {
   const _DetailsCard({
     required this.serverAddress,
-    required this.deviceLabel,
     required this.region,
     required this.address,
   });
 
   final String serverAddress;
-  final String? deviceLabel;
   final String? region;
   final String? address;
 
@@ -256,12 +257,6 @@ class _DetailsCard extends StatelessWidget {
         child: Column(
           children: [
             _row(context, Icons.dns_outlined, 'Server', serverAddress),
-            _row(
-              context,
-              Icons.smartphone,
-              'Device',
-              deviceLabel ?? 'Not registered yet',
-            ),
             _row(context, Icons.public, 'Region', region ?? '—'),
             _row(context, Icons.route_outlined, 'Tunnel IP', address ?? '—'),
           ],

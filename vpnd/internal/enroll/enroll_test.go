@@ -98,7 +98,7 @@ func TestEnrolSendsOnlyThePublicHalf(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL)
-	result, err := client.Enrol(context.Background(), "vpninv_code", "laptop", "linux")
+	result, err := client.Enrol(context.Background(), "vpninv_code")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestEnrolSurfacesTheServersOwnMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL).Enrol(context.Background(), "vpninv_dead", "", "")
+	_, err := New(server.URL).Enrol(context.Background(), "vpninv_dead")
 	if err == nil {
 		t.Fatal("a 403 was treated as success")
 	}
@@ -198,7 +198,7 @@ func TestARedirectIsRefusedRatherThanFollowed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := New(server.URL).Enrol(context.Background(), "vpninv_code", "", ""); err == nil {
+	if _, err := New(server.URL).Enrol(context.Background(), "vpninv_code"); err == nil {
 		t.Fatal("a redirect to another host was followed")
 	}
 }
@@ -212,7 +212,7 @@ func TestAConfigWithNoPlaceholderIsRefused(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := New(server.URL).Enrol(context.Background(), "vpninv_code", "", ""); err == nil {
+	if _, err := New(server.URL).Enrol(context.Background(), "vpninv_code"); err == nil {
 		t.Fatal("a config with no endpoint was accepted")
 	}
 }

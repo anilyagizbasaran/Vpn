@@ -11,7 +11,7 @@ The design goal is that **compromising any one component is not enough**.
 
 | Component | Knows | Cannot |
 |---|---|---|
-| Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Touch WireGuard. Holds no private keys and no privileges |
+| Control plane (`server/`) | A hashed code, and one public key and address per device | Touch WireGuard. Holds no private keys, no names, no timestamps and no traffic counts |
 | Node agent (`vpn-node-agent`) | How to edit the interface | Read a token, or learn another node's peers |
 | Client (`apps/client`) | Its device token, **the private key** | Touch the network interface (on desktop) |
 | Desktop daemon (`vpnd`) | How to bring a tunnel up; on desktop, the device token and **the private key** | Anything beyond the one control plane it was pointed at |
@@ -47,18 +47,19 @@ recover.
 One code, every device. Manage it from the server:
 
 ```bash
-vpn status          # is a code set, and how many devices are on it
-vpn devices         # one line per device: what it is, when, how much traffic
-vpn revoke 3        # cut off one device; its address returns to the pool
+vpn status          # is a code set, and how many devices it enrolled
+vpn howmanydevice   # how many are connected right now
 vpn reset           # new code, devices stay connected
 vpn reset --kick    # new code and remove every device
 ```
 
 The code is ten characters from Crockford's base32 — no I, L, O or U, so
-nothing has to be guessed from a font. It is shown once and stored only as an
-HMAC, so `vpn status` can say a code exists but never what it is; if you lose
-it, `vpn reset` issues a new one without disturbing anything already
-connected.
+nothing has to be guessed from a font. `install.sh` prints it when it finishes.
+
+It is shown once and stored only as an HMAC, so `vpn status` can say a code
+exists but never what it is. **Losing it is not a problem worth solving:**
+`vpn reset` issues a new one in a second, and the devices already connected go
+on working — there is nothing to recover.
 
 There is no device quota. What bounds enrolment is the address pool, and what
 answers a leaked code is `vpn reset --kick`.
@@ -229,6 +230,30 @@ it had been, that would be code execution as root.
 
 Stated explicitly, including where the edges are:
 
+- **The database holds a key, an address, and two hashes. Nothing else.**
+  There is no device name, no platform, no created-at date, no last-seen time
+  and no byte counter — not because they were hard to store, but because a VPN
+  that keeps them is keeping a record of where its users were and when. A test
+  asserts the column list so this cannot quietly grow back.
+- **Your address is never written down.** The node knows the endpoint you dial
+  from, because WireGuard cannot route without it, but it stays in kernel
+  memory: the agent no longer reports it, the control plane has nowhere to put
+  it, and the rate limiter logs the path it rejected rather than who was asking.
+- **`vpn howmanydevice` counts live handshakes**, not rows. It reads the
+  interface on the node, which is the only place that knows — and the answer
+  disappears the moment a peer goes quiet, because nothing recorded it.
+- **What cannot go, and why.** WireGuard authenticates a peer by its public
+  key, and every peer needs a stable address inside the tunnel. Those two are
+  the tunnel; a key is not a name, but it is stable, and pretending otherwise
+  would be dishonest. Everything else is gone.
+- **Removing is deleting.** A revoked device's row is dropped rather than
+  flagged, because a date saying when somebody was cut off is history. Rotating
+  a code overwrites its hash in place, so the old code stops resolving and
+  nothing records that it ever did — which is why enrolment answers "not valid"
+  rather than "revoked".
+- **There is no per-device revoke,** because there is no list to pick from.
+  Cutting one person off without the others would need exactly the record this
+  server refuses to keep. `vpn reset --kick` removes everybody.
 - **Address allocation** hands out the lowest free address in the pool.
   Predictability is harmless: peers are authenticated by public key, never by
   address.

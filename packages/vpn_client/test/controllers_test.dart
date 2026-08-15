@@ -18,6 +18,7 @@ late EnrollController enrol;
 late VpnController vpn;
 
 const base = 'https://api.test';
+
 /// A real 32-byte key, not just something base64-shaped. The previous fixture
 /// decoded to 35 bytes, which every string comparison accepted and X25519 threw
 /// on the moment a test actually did arithmetic with it.
@@ -46,11 +47,7 @@ Map<String, dynamic> deviceBody({
 }) => {
   'device': {
     'id': id,
-    'label': 'Android device',
-    'platform': 'android',
     'publicKey': peerPublicKey,
-    'createdAt': '2026-01-01T00:00:00.000Z',
-    'keyRotatedAt': null,
     // A device now holds an address per region rather than one address.
     'locations': [
       {
@@ -62,7 +59,6 @@ Map<String, dynamic> deviceBody({
         'online': true,
       },
     ],
-    'usage': {'rxBytes': 0, 'txBytes': 0},
   },
   'server': {
     'id': 1,
@@ -150,11 +146,7 @@ void main() {
           body: {...deviceBody(), 'deviceToken': 'vpndev_new'},
         );
 
-        final ok = await enrol.enrol(
-          inviteToken: 'ABCD123456',
-          label: 'Android device',
-          platform: 'android',
-        );
+        final ok = await enrol.enrol(inviteToken: 'ABCD123456');
 
         expect(ok, isTrue);
         expect(enrol.status, EnrollStatus.enrolled);
@@ -185,11 +177,7 @@ void main() {
           },
         );
 
-        final ok = await enrol.enrol(
-          inviteToken: 'DEAD123456',
-          label: 'Android device',
-          platform: 'android',
-        );
+        final ok = await enrol.enrol(inviteToken: 'DEAD123456');
 
         expect(ok, isFalse);
         expect(enrol.status, EnrollStatus.notEnrolled);
@@ -213,11 +201,7 @@ void main() {
         },
       );
 
-      final ok = await enrol.enrol(
-        inviteToken: 'FULL123456',
-        label: 'Android device',
-        platform: 'android',
-      );
+      final ok = await enrol.enrol(inviteToken: 'FULL123456');
 
       expect(ok, isFalse);
       expect(enrol.error, contains('Device limit reached (5).'));
@@ -227,7 +211,7 @@ void main() {
 
     test('clearError removes the banner', () async {
       http.enqueue('POST', '/enroll', status: 401, body: {'error': {}});
-      await enrol.enrol(inviteToken: 'x', label: 'l', platform: 'android');
+      await enrol.enrol(inviteToken: 'x');
       expect(enrol.error, isNotNull);
 
       enrol.clearError();

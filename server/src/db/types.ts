@@ -1,21 +1,16 @@
 /**
  * Permission to enrol devices — what is replacing accounts.
  *
- * A credential and nothing else: no email, no password, no session. The
- * operator mints one, hands it over, and revokes it to cut someone off. The
- * part that matters is unchanged: an invite lets a device register its
- * *public* key, and the private half never leaves the device.
+ * A credential and nothing else: no email, no password, no session, and no
+ * record of when it was made or last used. The operator hands the code over,
+ * and rotates it to cut everyone off.
  */
 export interface Invite {
   id: number;
-  /** Free text, for the operator's own benefit: "phone", "Ali", "laptop". */
-  label: string;
-  /** HMAC of the token. The token is shown once and never stored. */
+  /** HMAC of the code. The code is shown once and never stored. */
   tokenHash: string;
-  deviceLimit: number;
-  createdAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
+  /** Null means no cap; the address pool is the only bound. */
+  deviceLimit: number | null;
 }
 
 /**
@@ -56,15 +51,18 @@ export const SERVER_STATUSES = ['active', 'draining', 'offline'] as const;
 export type ServerStatus = (typeof SERVER_STATUSES)[number];
 
 /**
- * What the quota counts: one keypair, one entry in the device list, however
- * many servers it is bound to.
+ * One keypair, however many servers it is bound to.
+ *
+ * Four fields, and every one of them is needed to carry a packet. There is no
+ * name, no platform and no timestamp: a VPN that recorded when each device
+ * appeared would be keeping a log of its users' movements, and the only way
+ * not to leak that is not to have it.
  */
 export interface Device {
   id: number;
-  /** The invite this device enrolled with. Revoking it takes the device too. */
+  /** The invite this device enrolled with. Rotating it does not remove it. */
   inviteId: number;
-  label: string;
-  platform: string;
+  /** What WireGuard authenticates. Stable, and therefore pseudonymous. */
   publicKey: string;
   /**
    * HMAC of the token this device authenticates with, issued at enrolment.
@@ -73,15 +71,14 @@ export interface Device {
    * stolen phone cannot enrol more devices.
    */
   tokenHash: string;
-  createdAt: string;
-  /** Last time the device replaced its keypair; null if never rotated. */
-  keyRotatedAt: string | null;
-  revokedAt: string | null;
 }
 
 /**
  * One device's address on one server. Not an identity — the identity is the
  * device. A device reachable in three regions has three of these.
+ *
+ * Revoking deletes the row rather than flagging it: a date saying when someone
+ * was cut off is history, and this table does not keep any.
  */
 export interface Peer {
   id: number;
@@ -91,34 +88,7 @@ export interface Peer {
   allowedIp: string;
   /** AES-256-GCM ciphertext, or null when preshared keys are disabled. */
   presharedKeyEnc: string | null;
-  createdAt: string;
-  revokedAt: string | null;
 }
-
-/** Traffic counters, as last reported by a node agent. */
-export interface PeerUsage {
-  peerId: number;
-  rxBytes: number;
-  txBytes: number;
-  lastHandshakeAt: string | null;
-  updatedAt: string;
-}
-
-/**
- * Device platforms the API accepts. A closed set rather than free text: it
- * drives an icon in the device list, and an unbounded string would end up
- * rendered verbatim.
- */
-export const DEVICE_PLATFORMS = [
-  'android',
-  'ios',
-  'windows',
-  'macos',
-  'linux',
-  'unknown',
-] as const;
-
-export type DevicePlatform = (typeof DEVICE_PLATFORMS)[number];
 
 /** Thrown by repositories when a UNIQUE index rejects an insert. */
 export class UniqueConstraintError extends Error {

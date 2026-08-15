@@ -76,14 +76,17 @@ void main() {
       expect(private[31] & 0xC0, 0x40);
     });
 
-    test('the stored private key really derives the stored public key', () async {
-      final pair = await WireGuardKeys.generate();
+    test(
+      'the stored private key really derives the stored public key',
+      () async {
+        final pair = await WireGuardKeys.generate();
 
-      final derived = await WireGuardKeys.publicKeyFor(
-        Uint8List.fromList(base64.decode(pair.privateKey)),
-      );
-      expect(base64.encode(derived), pair.publicKey);
-    });
+        final derived = await WireGuardKeys.publicKeyFor(
+          Uint8List.fromList(base64.decode(pair.privateKey)),
+        );
+        expect(base64.encode(derived), pair.publicKey);
+      },
+    );
 
     test('every call produces a different key', () async {
       final keys = <String>{};

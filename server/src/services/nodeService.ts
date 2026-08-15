@@ -1,4 +1,4 @@
-import type { Repositories, UsageReport } from '../db/repositories.js';
+import type { Repositories } from '../db/repositories.js';
 import type { VpnServer } from '../db/types.js';
 import { decryptSecret, hmac } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
@@ -32,7 +32,6 @@ export interface NodeServiceConfig {
 export interface AgentSyncRequest {
   interfacePublicKey: string;
   agentVersion: string;
-  usage: UsageReport[];
 }
 
 export interface AgentPeer {
@@ -80,9 +79,6 @@ export class NodeService {
   async sync(server: VpnServer, request: AgentSyncRequest): Promise<AgentSyncResponse> {
     const observedAt = new Date().toISOString();
 
-    if (request.usage.length > 0) {
-      await this.repos.usage.record(server.id, request.usage, observedAt);
-    }
 
     await this.repos.servers.recordHeartbeat({
       id: server.id,

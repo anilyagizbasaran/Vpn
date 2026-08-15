@@ -122,11 +122,11 @@ func ValidateAddress(raw string) (string, error) {
 	return trimmed, nil
 }
 
+// What enrolment sends, in full. A label and a platform used to travel with
+// it; the control plane stored them, so the daemon has stopped offering them.
 type enrolRequest struct {
 	InviteToken string `json:"inviteToken"`
 	PublicKey   string `json:"publicKey"`
-	Label       string `json:"label,omitempty"`
-	Platform    string `json:"platform,omitempty"`
 }
 
 // The subset of the control plane's answer this daemon uses. Everything else
@@ -151,7 +151,7 @@ type errorResponse struct {
 // The keypair is made here and only the public half is sent, so a control
 // plane that is compromised — or simply dishonest — never holds anything that
 // could decrypt this machine's traffic.
-func (c *Client) Enrol(ctx context.Context, inviteToken, label, platform string) (Result, error) {
+func (c *Client) Enrol(ctx context.Context, inviteToken string) (Result, error) {
 	keys, err := GenerateKeys()
 	if err != nil {
 		return Result{}, err
@@ -160,8 +160,6 @@ func (c *Client) Enrol(ctx context.Context, inviteToken, label, platform string)
 	body, err := json.Marshal(enrolRequest{
 		InviteToken: strings.TrimSpace(inviteToken),
 		PublicKey:   keys.Public,
-		Label:       label,
-		Platform:    platform,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("encode enrolment request: %w", err)

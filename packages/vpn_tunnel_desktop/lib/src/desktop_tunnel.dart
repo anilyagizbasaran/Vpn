@@ -8,7 +8,8 @@ import 'daemon_client.dart';
 /// Where the GUI looks for vpnd. Must match the daemon's DefaultSocketPath.
 String defaultSocketPath() {
   if (Platform.isWindows) {
-    final programData = Platform.environment['ProgramData'] ?? r'C:\ProgramData';
+    final programData =
+        Platform.environment['ProgramData'] ?? r'C:\ProgramData';
     return '$programData\\vpnd\\vpnd.sock';
   }
   return '/run/vpnd/vpnd.sock';
@@ -76,12 +77,14 @@ class DesktopTunnel implements Tunnel {
 
     client.events.listen(_onEvent);
     // A daemon restart or crash must not leave the UI showing "connected".
-    unawaited(client.closed.then((_) {
-      if (_client == client) {
-        _client = null;
-        _emit(TunnelStage.disconnected);
-      }
-    }));
+    unawaited(
+      client.closed.then((_) {
+        if (_client == client) {
+          _client = null;
+          _emit(TunnelStage.disconnected);
+        }
+      }),
+    );
 
     _client = client;
     return client;

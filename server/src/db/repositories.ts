@@ -2,7 +2,6 @@ import type {
   Device,
   Invite,
   Peer,
-  PeerUsage,
   ServerStatus,
   VpnServer,
 } from './types.js';
@@ -20,29 +19,17 @@ import type {
 
 export interface InviteRepository {
   /** `deviceLimit` null means no cap; the address pool is the only bound. */
-  create(input: {
-    label: string;
-    tokenHash: string;
-    deviceLimit: number | null;
-  }): Promise<Invite>;
+  create(input: { tokenHash: string; deviceLimit: number | null }): Promise<Invite>;
   findById(id: number): Promise<Invite | null>;
   /** The lookup enrolment does, so it is indexed and exact. */
   findByTokenHash(tokenHash: string): Promise<Invite | null>;
   list(): Promise<Invite[]>;
-  touch(id: number, usedAt: string): Promise<void>;
   /**
    * Replaces the secret without touching the invite's identity, so the devices
    * already enrolled with it keep working. This is rotation: the old code stops
    * enrolling anything new, and nobody has to set their phone up again.
    */
   rotateToken(id: number, tokenHash: string): Promise<Invite | null>;
-  /**
-   * Marks the invite dead. On its own this stops further enrolment and nothing
-   * else — the devices already enrolled keep their own tokens and stay on the
-   * interface. Cutting them off is [DeviceService.revokeAllForInvite], and the
-   * two go together wherever "revoke" is offered to an operator.
-   */
-  revoke(id: number, revokedAt: string): Promise<boolean>;
   delete(id: number): Promise<boolean>;
 }
 
@@ -88,8 +75,6 @@ export interface ServerRepository {
  */
 export interface CreateDeviceInput {
   inviteId: number;
-  label: string;
-  platform: string;
   publicKey: string;
   tokenHash: string;
 }
@@ -102,9 +87,10 @@ export interface DeviceRepository {
   findByTokenHash(tokenHash: string): Promise<Device | null>;
   listActiveByInvite(inviteId: number): Promise<Device[]>;
   countActiveByInvite(inviteId: number): Promise<number>;
-  revoke(id: number, revokedAt: string): Promise<boolean>;
+  /** Deletes the device; its peers go with it by cascade. */
+  revoke(id: number): Promise<boolean>;
   /** Swaps in a new keypair, keeping the device identity and its addresses. */
-  rotateKey(id: number, publicKey: string, rotatedAt: string): Promise<Device>;
+  rotateKey(id: number, publicKey: string): Promise<Device>;
 }
 
 export interface CreatePeerInput {
@@ -114,10 +100,14 @@ export interface CreatePeerInput {
   presharedKeyEnc: string | null;
 }
 
-/** A peer joined to the device that owns it, which is how agents see them. */
+/**
+ * A peer joined to the key that owns it, which is how agents see them.
+ *
+ * A key and an address — everything an interface needs and nothing it does
+ * not. There was a device label here once, sent to every node on every sync.
+ */
 export interface PeerWithDevice extends Peer {
   publicKey: string;
-  deviceLabel: string;
 }
 
 export interface PeerRepository {
@@ -130,28 +120,8 @@ export interface PeerRepository {
   listActiveByServerWithDevice(serverId: number): Promise<PeerWithDevice[]>;
   /** Addresses currently held by live peers on a server. */
   activeAllowedIps(serverId: number): Promise<string[]>;
-  revoke(id: number, revokedAt: string): Promise<boolean>;
-  revokeAllForDevice(deviceId: number, revokedAt: string): Promise<number>;
-}
-
-export interface UsageReport {
-  publicKey: string;
-  rxBytes: number;
-  txBytes: number;
-  lastHandshakeAt: string | null;
-}
-
-export interface UsageRepository {
-  /**
-   * Folds a batch of agent readings into the running totals.
-   *
-   * WireGuard's counters restart whenever a peer is re-added, so a reading
-   * lower than the last one is treated as a reset rather than as a negative
-   * delta — otherwise a reconnect would silently erase a user's usage.
-   */
-  record(serverId: number, reports: UsageReport[], observedAt: string): Promise<number>;
-  findByPeerId(peerId: number): Promise<PeerUsage | null>;
-  totalsForDevice(deviceId: number): Promise<{ rxBytes: number; txBytes: number }>;
+  revoke(id: number): Promise<boolean>;
+  revokeAllForDevice(deviceId: number): Promise<number>;
 }
 
 export interface Repositories {
@@ -159,5 +129,4 @@ export interface Repositories {
   servers: ServerRepository;
   devices: DeviceRepository;
   peers: PeerRepository;
-  usage: UsageRepository;
 }

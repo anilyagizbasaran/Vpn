@@ -66,7 +66,8 @@ class _KillSwitchScreenState extends State<KillSwitchScreen> {
 
           const _Step(
             number: 1,
-            text: 'Open VPN settings and tap the gear next to "${AppConfig.vpnName}".',
+            text:
+                'Open VPN settings and tap the gear next to "${AppConfig.vpnName}".',
           ),
           const _Step(number: 2, text: 'Turn on "Always-on VPN".'),
           const _Step(

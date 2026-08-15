@@ -1,7 +1,7 @@
 import type { Repositories } from '../db/repositories.js';
 import type { Device, Invite } from '../db/types.js';
 import { hmac, humanCode, normalizeCode, randomToken } from '../utils/crypto.js';
-import { forbidden, unauthorized } from '../utils/errors.js';
+import { unauthorized } from '../utils/errors.js';
 
 /**
  * Domain separators, so a token from one place can never be presented as a
@@ -55,10 +55,9 @@ export class InviteService {
     private readonly config: { tokenPepper: string },
   ) {}
 
-  async mint(input: { label: string; deviceLimit?: number | null }): Promise<MintedInvite> {
+  async mint(input: { deviceLimit?: number | null } = {}): Promise<MintedInvite> {
     const token = humanCode(INVITE_CODE_LENGTH);
     const invite = await this.repos.invites.create({
-      label: input.label,
       tokenHash: hashInviteToken(this.config.tokenPepper, token),
       deviceLimit: input.deviceLimit ?? null,
     });
@@ -87,10 +86,6 @@ export class InviteService {
     return invite ? { invite, token } : null;
   }
 
-  revoke(id: number, at = new Date()): Promise<boolean> {
-    return this.repos.invites.revoke(id, at.toISOString());
-  }
-
   /**
    * Resolves an invite token to the invite it belongs to.
    *
@@ -104,14 +99,11 @@ export class InviteService {
     const invite = await this.repos.invites.findByTokenHash(
       hashInviteToken(this.config.tokenPepper, normalizeCode(token)),
     );
+    // One answer for both "never existed" and "rotated away", because there
+    // is no longer a difference: rotating replaces the hash, so the old code
+    // simply does not resolve. Nothing records that it once did.
     if (!invite) throw unauthorized('That invite code is not valid.');
-    if (invite.revokedAt) throw forbidden('That invite code has been revoked.');
     return invite;
-  }
-
-  /** Records that an invite was used, for the operator's benefit only. */
-  touch(id: number, at = new Date()): Promise<void> {
-    return this.repos.invites.touch(id, at.toISOString());
   }
 
   /**

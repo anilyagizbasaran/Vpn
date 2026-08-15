@@ -9,15 +9,12 @@ import type {
   PeerWithDevice,
   Repositories,
   ServerRepository,
-  UsageReport,
-  UsageRepository,
 } from './repositories.js';
 import { UniqueConstraintError } from './types.js';
 import type {
   Device,
   Invite,
   Peer,
-  PeerUsage,
   ServerStatus,
   VpnServer,
 } from './types.js';
@@ -49,23 +46,14 @@ interface ServerRow {
 interface DeviceRow {
   id: number;
   invite_id: number;
-  label: string;
-  platform: string;
   public_key: string;
   token_hash: string;
-  created_at: string;
-  key_rotated_at: string | null;
-  revoked_at: string | null;
 }
 
 interface InviteRow {
   id: number;
-  label: string;
   token_hash: string;
-  device_limit: number;
-  created_at: string;
-  last_used_at: string | null;
-  revoked_at: string | null;
+  device_limit: number | null;
 }
 
 interface PeerRow {
@@ -74,23 +62,10 @@ interface PeerRow {
   server_id: number;
   allowed_ip: string;
   preshared_key_enc: string | null;
-  created_at: string;
-  revoked_at: string | null;
 }
 
 interface PeerWithDeviceRow extends PeerRow {
   public_key: string;
-  label: string;
-}
-
-interface UsageRow {
-  peer_id: number;
-  rx_bytes: number;
-  tx_bytes: number;
-  last_rx_counter: number;
-  last_tx_counter: number;
-  last_handshake_at: string | null;
-  updated_at: string;
 }
 
 const toServer = (r: ServerRow): VpnServer => ({
@@ -116,23 +91,14 @@ const toServer = (r: ServerRow): VpnServer => ({
 const toDevice = (r: DeviceRow): Device => ({
   id: r.id,
   inviteId: r.invite_id,
-  label: r.label,
-  platform: r.platform,
   publicKey: r.public_key,
   tokenHash: r.token_hash,
-  createdAt: r.created_at,
-  keyRotatedAt: r.key_rotated_at,
-  revokedAt: r.revoked_at,
 });
 
 const toInvite = (r: InviteRow): Invite => ({
   id: r.id,
-  label: r.label,
   tokenHash: r.token_hash,
   deviceLimit: r.device_limit,
-  createdAt: r.created_at,
-  lastUsedAt: r.last_used_at,
-  revokedAt: r.revoked_at,
 });
 
 const toPeer = (r: PeerRow): Peer => ({
@@ -141,22 +107,11 @@ const toPeer = (r: PeerRow): Peer => ({
   serverId: r.server_id,
   allowedIp: r.allowed_ip,
   presharedKeyEnc: r.preshared_key_enc,
-  createdAt: r.created_at,
-  revokedAt: r.revoked_at,
 });
 
 const toPeerWithDevice = (r: PeerWithDeviceRow): PeerWithDevice => ({
   ...toPeer(r),
   publicKey: r.public_key,
-  deviceLabel: r.label,
-});
-
-const toUsage = (r: UsageRow): PeerUsage => ({
-  peerId: r.peer_id,
-  rxBytes: r.rx_bytes,
-  txBytes: r.tx_bytes,
-  lastHandshakeAt: r.last_handshake_at,
-  updatedAt: r.updated_at,
 });
 
 /**
@@ -187,18 +142,14 @@ function rethrowUnique(error: unknown, hintByColumn: Record<string, string>): ne
 class SqliteInviteRepository implements InviteRepository {
   constructor(private readonly db: Db) {}
 
-  async create(input: {
-    label: string;
-    tokenHash: string;
-    deviceLimit: number | null;
-  }): Promise<Invite> {
+  async create(input: { tokenHash: string; deviceLimit: number | null }): Promise<Invite> {
     const row = this.db
       .prepare(
-        `INSERT INTO invites (label, token_hash, device_limit, created_at)
-         VALUES (@label, @tokenHash, @deviceLimit, @createdAt)
+        `INSERT INTO invites (token_hash, device_limit)
+         VALUES (@tokenHash, @deviceLimit)
          RETURNING *`,
       )
-      .get({ ...input, createdAt: nowIso() }) as InviteRow;
+      .get(input) as InviteRow;
     return toInvite(row);
   }
 
@@ -221,30 +172,17 @@ class SqliteInviteRepository implements InviteRepository {
     return rows.map(toInvite);
   }
 
-  async touch(id: number, usedAt: string): Promise<void> {
-    this.db.prepare('UPDATE invites SET last_used_at = ? WHERE id = ?').run(usedAt, id);
-  }
-
   async rotateToken(id: number, tokenHash: string): Promise<Invite | null> {
-    // revoked_at is cleared as well: rotating a code is how a revoked invite is
-    // brought back, and leaving it set would hand out a code that enrolment
-    // then refuses with "that code has been revoked".
+    // Replacing the hash *is* the revocation: the old code stops resolving the
+    // instant this runs, and nothing anywhere records that it ever did.
     const row = this.db
       .prepare(
-        `UPDATE invites SET token_hash = @tokenHash, revoked_at = NULL
+        `UPDATE invites SET token_hash = @tokenHash
           WHERE id = @id
         RETURNING *`,
       )
       .get({ id, tokenHash }) as InviteRow | undefined;
     return row ? toInvite(row) : null;
-  }
-
-  async revoke(id: number, revokedAt: string): Promise<boolean> {
-    return (
-      this.db
-        .prepare('UPDATE invites SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-        .run(revokedAt, id).changes > 0
-    );
   }
 
   async delete(id: number): Promise<boolean> {
@@ -362,13 +300,11 @@ class SqliteDeviceRepository implements DeviceRepository {
     try {
       const row = this.db
         .prepare(
-          `INSERT INTO devices (invite_id, label, platform, public_key,
-                                token_hash, created_at)
-           VALUES (@inviteId, @label, @platform, @publicKey,
-                   @tokenHash, @createdAt)
+          `INSERT INTO devices (invite_id, public_key, token_hash)
+           VALUES (@inviteId, @publicKey, @tokenHash)
            RETURNING *`,
         )
-        .get({ ...input, createdAt: nowIso() }) as DeviceRow;
+        .get(input) as DeviceRow;
       return toDevice(row);
     } catch (error) {
       rethrowUnique(error, {
@@ -390,42 +326,43 @@ class SqliteDeviceRepository implements DeviceRepository {
 
   async findByTokenHash(tokenHash: string): Promise<Device | null> {
     const row = this.db
-      .prepare('SELECT * FROM devices WHERE token_hash = ? AND revoked_at IS NULL')
+      .prepare('SELECT * FROM devices WHERE token_hash = ?')
       .get(tokenHash) as DeviceRow | undefined;
     return row ? toDevice(row) : null;
   }
 
   async listActiveByInvite(inviteId: number): Promise<Device[]> {
     const rows = this.db
-      .prepare('SELECT * FROM devices WHERE invite_id = ? AND revoked_at IS NULL ORDER BY id')
+      .prepare('SELECT * FROM devices WHERE invite_id = ? ORDER BY id')
       .all(inviteId) as DeviceRow[];
     return rows.map(toDevice);
   }
 
   async countActiveByInvite(inviteId: number): Promise<number> {
     const row = this.db
-      .prepare('SELECT COUNT(*) AS n FROM devices WHERE invite_id = ? AND revoked_at IS NULL')
+      .prepare('SELECT COUNT(*) AS n FROM devices WHERE invite_id = ?')
       .get(inviteId) as { n: number };
     return row.n;
   }
 
-  async revoke(id: number, revokedAt: string): Promise<boolean> {
-    return (
-      this.db
-        .prepare('UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-        .run(revokedAt, id).changes > 0
-    );
+  async revoke(id: number): Promise<boolean> {
+    // Deleted, not flagged. A row saying "this key was removed, on this date"
+    // is a record of somebody leaving, and peers go with it by cascade.
+    return this.db.prepare('DELETE FROM devices WHERE id = ?').run(id).changes > 0;
   }
 
-  async rotateKey(id: number, publicKey: string, rotatedAt: string): Promise<Device> {
+  async rotateKey(id: number, publicKey: string): Promise<Device> {
     try {
+      // No rotated-at column to update: when a key was replaced is a fact
+      // about a person's habits, and the client decides when to rotate from
+      // the age of the key it is holding, not from anything stored here.
       const row = this.db
         .prepare(
-          `UPDATE devices SET public_key = @publicKey, key_rotated_at = @rotatedAt
-            WHERE id = @id AND revoked_at IS NULL
+          `UPDATE devices SET public_key = @publicKey
+            WHERE id = @id
         RETURNING *`,
         )
-        .get({ id, publicKey, rotatedAt }) as DeviceRow | undefined;
+        .get({ id, publicKey }) as DeviceRow | undefined;
 
       if (!row) throw new Error(`device ${id} is not available for rotation`);
       return toDevice(row);
@@ -442,11 +379,11 @@ class SqlitePeerRepository implements PeerRepository {
     try {
       const row = this.db
         .prepare(
-          `INSERT INTO peers (device_id, server_id, allowed_ip, preshared_key_enc, created_at)
-           VALUES (@deviceId, @serverId, @allowedIp, @presharedKeyEnc, @createdAt)
+          `INSERT INTO peers (device_id, server_id, allowed_ip, preshared_key_enc)
+           VALUES (@deviceId, @serverId, @allowedIp, @presharedKeyEnc)
            RETURNING *`,
         )
-        .get({ ...input, createdAt: nowIso() }) as PeerRow;
+        .get(input) as PeerRow;
       return toPeer(row);
     } catch (error) {
       rethrowUnique(error, {
@@ -464,7 +401,7 @@ class SqlitePeerRepository implements PeerRepository {
   async findActiveForDeviceOnServer(deviceId: number, serverId: number): Promise<Peer | null> {
     const row = this.db
       .prepare(
-        'SELECT * FROM peers WHERE device_id = ? AND server_id = ? AND revoked_at IS NULL',
+        'SELECT * FROM peers WHERE device_id = ? AND server_id = ?',
       )
       .get(deviceId, serverId) as PeerRow | undefined;
     return row ? toPeer(row) : null;
@@ -472,7 +409,7 @@ class SqlitePeerRepository implements PeerRepository {
 
   async listActiveByDevice(deviceId: number): Promise<Peer[]> {
     const rows = this.db
-      .prepare('SELECT * FROM peers WHERE device_id = ? AND revoked_at IS NULL ORDER BY server_id')
+      .prepare('SELECT * FROM peers WHERE device_id = ? ORDER BY server_id')
       .all(deviceId) as PeerRow[];
     return rows.map(toPeer);
   }
@@ -482,12 +419,10 @@ class SqlitePeerRepository implements PeerRepository {
     // rows were not touched, so both revocations are filtered here.
     const rows = this.db
       .prepare(
-        `SELECT p.*, d.public_key, d.label
+        `SELECT p.*, d.public_key
            FROM peers p
            JOIN devices d ON d.id = p.device_id
           WHERE p.server_id = ?
-            AND p.revoked_at IS NULL
-            AND d.revoked_at IS NULL
           ORDER BY p.id`,
       )
       .all(serverId) as PeerWithDeviceRow[];
@@ -496,110 +431,19 @@ class SqlitePeerRepository implements PeerRepository {
 
   async activeAllowedIps(serverId: number): Promise<string[]> {
     const rows = this.db
-      .prepare('SELECT allowed_ip FROM peers WHERE server_id = ? AND revoked_at IS NULL')
+      .prepare('SELECT allowed_ip FROM peers WHERE server_id = ?')
       .all(serverId) as { allowed_ip: string }[];
     return rows.map((r) => r.allowed_ip);
   }
 
-  async revoke(id: number, revokedAt: string): Promise<boolean> {
-    return (
-      this.db
-        .prepare('UPDATE peers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-        .run(revokedAt, id).changes > 0
-    );
+  async revoke(id: number): Promise<boolean> {
+    return this.db.prepare('DELETE FROM peers WHERE id = ?').run(id).changes > 0;
   }
 
-  async revokeAllForDevice(deviceId: number, revokedAt: string): Promise<number> {
-    return this.db
-      .prepare('UPDATE peers SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL')
-      .run(revokedAt, deviceId).changes;
-  }
-}
-
-class SqliteUsageRepository implements UsageRepository {
-  constructor(private readonly db: Db) {}
-
-  async record(serverId: number, reports: UsageReport[], observedAt: string): Promise<number> {
-    if (reports.length === 0) return 0;
-
-    // Map the agent's public keys back to peer ids on this server. The agent
-    // reports whatever is on its interface, which can include peers revoked
-    // moments ago; those simply find no row and are ignored.
-    const lookup = this.db.prepare(
-      `SELECT p.id FROM peers p
-         JOIN devices d ON d.id = p.device_id
-        WHERE p.server_id = ? AND d.public_key = ? AND p.revoked_at IS NULL`,
-    );
-    const existing = this.db.prepare('SELECT * FROM peer_usage WHERE peer_id = ?');
-    const upsert = this.db.prepare(
-      `INSERT INTO peer_usage (peer_id, rx_bytes, tx_bytes, last_rx_counter,
-                               last_tx_counter, last_handshake_at, updated_at)
-       VALUES (@peerId, @rxBytes, @txBytes, @lastRx, @lastTx, @handshake, @updatedAt)
-       ON CONFLICT(peer_id) DO UPDATE SET
-         rx_bytes          = excluded.rx_bytes,
-         tx_bytes          = excluded.tx_bytes,
-         last_rx_counter   = excluded.last_rx_counter,
-         last_tx_counter   = excluded.last_tx_counter,
-         last_handshake_at = COALESCE(excluded.last_handshake_at, peer_usage.last_handshake_at),
-         updated_at        = excluded.updated_at`,
-    );
-
-    const apply = this.db.transaction((batch: UsageReport[]) => {
-      let written = 0;
-
-      for (const report of batch) {
-        const peer = lookup.get(serverId, report.publicKey) as { id: number } | undefined;
-        if (!peer) continue;
-
-        const previous = existing.get(peer.id) as UsageRow | undefined;
-
-        // A reading below the last one means the interface restarted the
-        // counter, not that traffic went backwards. Treating it as a delta
-        // would erase the user's history.
-        const rxDelta =
-          previous && report.rxBytes >= previous.last_rx_counter
-            ? report.rxBytes - previous.last_rx_counter
-            : report.rxBytes;
-        const txDelta =
-          previous && report.txBytes >= previous.last_tx_counter
-            ? report.txBytes - previous.last_tx_counter
-            : report.txBytes;
-
-        upsert.run({
-          peerId: peer.id,
-          rxBytes: (previous?.rx_bytes ?? 0) + rxDelta,
-          txBytes: (previous?.tx_bytes ?? 0) + txDelta,
-          lastRx: report.rxBytes,
-          lastTx: report.txBytes,
-          handshake: report.lastHandshakeAt,
-          updatedAt: observedAt,
-        });
-        written += 1;
-      }
-
-      return written;
-    });
-
-    return apply(reports);
-  }
-
-  async findByPeerId(peerId: number): Promise<PeerUsage | null> {
-    const row = this.db.prepare('SELECT * FROM peer_usage WHERE peer_id = ?').get(peerId) as
-      | UsageRow
-      | undefined;
-    return row ? toUsage(row) : null;
-  }
-
-  async totalsForDevice(deviceId: number): Promise<{ rxBytes: number; txBytes: number }> {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(u.rx_bytes), 0) AS rx, COALESCE(SUM(u.tx_bytes), 0) AS tx
-           FROM peer_usage u
-           JOIN peers p ON p.id = u.peer_id
-          WHERE p.device_id = ?`,
-      )
-      .get(deviceId) as { rx: number; tx: number };
-    return { rxBytes: row.rx, txBytes: row.tx };
+  async revokeAllForDevice(deviceId: number): Promise<number> {
+    // The address returns to the pool the moment the row is gone, and nothing
+    // remains to say who held it.
+    return this.db.prepare('DELETE FROM peers WHERE device_id = ?').run(deviceId).changes;
   }
 }
 
@@ -609,6 +453,5 @@ export function createSqliteRepositories(db: Db): Repositories {
     servers: new SqliteServerRepository(db),
     devices: new SqliteDeviceRepository(db),
     peers: new SqlitePeerRepository(db),
-    usage: new SqliteUsageRepository(db),
   };
 }

@@ -24,7 +24,7 @@ beforeEach(async () => {
 
 describe('enrolling a device', () => {
   it('never returns a private key when the device supplied its own', async () => {
-    const { token } = await container.invites.mint({ label: 't', deviceLimit: 5 });
+    const { token } = await container.invites.mint({ deviceLimit: 5 });
     const keys = clientKeypair();
 
     const created = await request(app)
@@ -33,7 +33,6 @@ describe('enrolling a device', () => {
       .expect(201);
 
     expect(created.body.device.publicKey).toBe(keys.publicKey);
-    expect(created.body.device.platform).toBe('android');
     expect(created.body.privateKey).toBeNull();
     expect(created.body.privateKeyIncluded).toBe(false);
     expect(created.body.conf).toContain(`PrivateKey = ${PRIVATE_KEY_PLACEHOLDER}`);
@@ -44,7 +43,7 @@ describe('enrolling a device', () => {
     // The fallback for clients that cannot do Curve25519 — curl, scripts. It
     // is the only path where a private key exists on the server at all, which
     // is why it announces itself.
-    const { token } = await container.invites.mint({ label: 't', deviceLimit: 5 });
+    const { token } = await container.invites.mint({ deviceLimit: 5 });
     const created = await request(app).post('/enroll').send({ inviteToken: token }).expect(201);
 
     expect(created.body.privateKeyIncluded).toBe(true);
@@ -67,7 +66,7 @@ describe('enrolling a device', () => {
   });
 
   it('rejects a malformed public key rather than storing it', async () => {
-    const { token } = await container.invites.mint({ label: 't', deviceLimit: 5 });
+    const { token } = await container.invites.mint({ deviceLimit: 5 });
     await request(app)
       .post('/enroll')
       .send({ inviteToken: token, publicKey: 'not-a-key' })

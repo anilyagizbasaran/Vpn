@@ -36,7 +36,6 @@ describe('node sync', () => {
       .send({
         interfacePublicKey: clientKeypair().publicKey,
         agentVersion: 'test',
-        usage: [],
       });
     expect(res.status).toBe(401);
   });
@@ -82,16 +81,16 @@ describe('node sync', () => {
     expect((await nodeSync(app, fra)).body.peers).toHaveLength(0);
   });
 
-  it('drops every device of a revoked code, not just the code', async () => {
+  it('drops every device of a rotated code, not just the code', async () => {
     const device = await enrolDevice(app, container);
     expect((await nodeSync(app, fra)).body.peers).toHaveLength(1);
 
-    // Revoking the invite alone stops further enrolment and nothing else. The
-    // device holds its own token and stays on the interface, so an operator
-    // who thought they had cut off a leaked code would still be carrying the
-    // traffic. Both halves have to run.
+    // Rotating alone stops further enrolment and nothing else. The device
+    // holds its own token and stays on the interface, so an operator who
+    // thought they had cut off a leaked code would still be carrying the
+    // traffic. Both halves have to run — which is what `vpn reset --kick` is.
     const invite = (await container.repos.invites.list())[0]!;
-    await container.invites.revoke(invite.id);
+    await container.invites.rotate(invite.id);
     expect((await nodeSync(app, fra)).body.peers).toHaveLength(1);
 
     const removed = await container.devices.revokeAllForInvite(invite.id);
@@ -143,53 +142,23 @@ describe('node sync', () => {
     expect(server?.reportedPublicKey).toBe(fra.publicKey);
   });
 
-  it('folds usage into per-device totals', async () => {
-    const device = await enrolDevice(app, container);
-
-    await nodeSync(app, fra, [{ publicKey: device.publicKey, rxBytes: 500, txBytes: 700 }]);
-    await nodeSync(app, fra, [{ publicKey: device.publicKey, rxBytes: 900, txBytes: 1_100 }]);
-
-    // Counters are absolute readings, not deltas: the second report replaces
-    // the first rather than adding to it.
-    const me = await request(app).get('/device').set(auth(device.deviceToken)).expect(200);
-    expect(me.body.device.usage).toEqual({ rxBytes: 900, txBytes: 1_100 });
-  });
-
-  it('rejects a malformed report without touching the totals', async () => {
+  it('rejects a malformed interface key', async () => {
     const res = await request(app)
       .post('/node/sync')
       .set(auth(fra.token))
       .send({
         interfacePublicKey: 'not-a-key',
         agentVersion: 'test',
-        usage: [],
       });
 
     expect(res.status).toBe(400);
   });
 
-  it('refuses an oversized usage report', async () => {
-    const usage = Array.from({ length: 10_001 }, () => ({
-      publicKey: clientKeypair().publicKey,
-      rxBytes: 1,
-      txBytes: 1,
-      lastHandshakeAt: null,
-    }));
-
-    const res = await request(app)
-      .post('/node/sync')
-      .set(auth(fra.token))
-      .send({ interfacePublicKey: fra.publicKey, agentVersion: 'test', usage });
-
-    expect(res.status).toBe(400);
-  });
 });
 
 describe('concurrent device creation', () => {
   it('never hands two devices the same address', async () => {
-    const { token: invite } = await container.invites.mint({
-      label: 'race',
-      deviceLimit: 8,
+    const { token: invite } = await container.invites.mint({ deviceLimit: 8,
     });
 
     // Eight enrolments at once against one pool. The partial unique index is
@@ -216,9 +185,7 @@ describe('concurrent device creation', () => {
   });
 
   it('keeps the pool consistent when creates and deletes interleave', async () => {
-    const { token: invite } = await container.invites.mint({
-      label: 'churn',
-      deviceLimit: 5,
+    const { token: invite } = await container.invites.mint({ deviceLimit: 5,
     });
 
     for (let round = 0; round < 4; round += 1) {
@@ -255,9 +222,7 @@ describe('address pool exhaustion', () => {
       serverAddress: '10.9.0.1',
     });
 
-    const { token: invite } = await tinyContainer.invites.mint({
-      label: 'tiny',
-      deviceLimit: 5,
+    const { token: invite } = await tinyContainer.invites.mint({ deviceLimit: 5,
     });
 
     const ok = await request(tiny)
@@ -277,9 +242,7 @@ describe('address pool exhaustion', () => {
 
   it('refuses to register a device when no node is allocatable', async () => {
     const { app: bare, container: bareContainer } = await createHarness();
-    const { token: invite } = await bareContainer.invites.mint({
-      label: 'bare',
-      deviceLimit: 5,
+    const { token: invite } = await bareContainer.invites.mint({ deviceLimit: 5,
     });
 
     const res = await request(bare)
@@ -311,24 +274,32 @@ describe('hostile and malformed input', () => {
     expect(res.body.error.code).toBe('payload_too_large');
   });
 
-  it('does not let a device label escape into the rendered config', async () => {
+  it('has no label to escape into the rendered config', async () => {
     const device = await enrolDevice(app, container);
 
-    const res = await request(app)
-      .post('/enroll')
-      .send({ inviteToken: device.inviteToken, label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey });
+    // This used to be a validation test: a label with a newline in it would
+    // otherwise reach the wg-quick config, where a line of its own is a
+    // directive. The label is not stored at all now, so the injection has
+    // nowhere to land — the field is accepted and thrown away.
+    const hostile = 'evil\nAllowedIPs = 10.0.0.0/8';
+    const res = await request(app).post('/enroll').send({
+      inviteToken: device.inviteToken,
+      label: hostile,
+      publicKey: clientKeypair().publicKey,
+    });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
+    expect(res.body.conf).not.toContain('10.0.0.0/8');
+    expect(JSON.stringify(res.body)).not.toContain('evil');
   });
 
   it('ignores client-supplied fields it does not own', async () => {
-    const { token: invite } = await container.invites.mint({ label: 'x', deviceLimit: 5 });
+    const { token: invite } = await container.invites.mint({ deviceLimit: 5 });
 
     const res = await request(app)
       .post('/enroll')
       .send({
         inviteToken: invite,
-        label: 'Phone',
         publicKey: clientKeypair().publicKey,
         allowedIp: '10.8.0.99/32',
         userId: 1,

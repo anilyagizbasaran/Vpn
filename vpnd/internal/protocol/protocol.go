@@ -72,8 +72,6 @@ type UpParams struct {
 type EnrollParams struct {
 	ServerAddress string `json:"serverAddress"`
 	InviteToken   string `json:"inviteToken"`
-	Label         string `json:"label,omitempty"`
-	Platform      string `json:"platform,omitempty"`
 }
 
 // Response is the reply to a [Request]. Exactly one of Result or Error is set.

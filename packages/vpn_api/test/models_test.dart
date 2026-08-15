@@ -10,8 +10,6 @@ const _deviceJson = '''
 {
   "device": {
     "id": 7,
-    "label": "Pixel 8",
-    "platform": "android",
     "publicKey": "cGVlcnB1YmxpY2tleXBlZXJwdWJsaWNrZXlwZWVycHVia2U=",
     "createdAt": "2026-01-01T00:00:00.000Z",
     "keyRotatedAt": null,
@@ -58,14 +56,11 @@ void main() {
       final config = DeviceConfig.fromJson(json(_deviceJson));
 
       expect(config.device.id, 7);
-      expect(config.device.label, 'Pixel 8');
-      expect(config.device.platform, 'android');
       expect(config.device.locations, hasLength(2));
       expect(config.device.locations.first.displayName, 'Frankfurt');
       expect(config.device.locations.last.allowedIp, '10.9.0.5/32');
       // A node whose agent has gone quiet is reported so the UI can hide it.
       expect(config.device.locations.last.online, isFalse);
-      expect(config.device.usage.rxBytes, 1024);
     });
 
     test('reports which region the config is for', () {
@@ -100,17 +95,13 @@ void main() {
       {
         "device": {
           "id": 1,
-          "label": "Old",
           "publicKey": "cGVlcnB1YmxpY2tleXBlZXJwdWJsaWNrZXlwZWVycHVia2U="
         },
         "conf": "[Interface]\\n"
       }
       '''),
       );
-
-      expect(config.device.platform, 'unknown');
       expect(config.device.locations, isEmpty);
-      expect(config.device.usage.rxBytes, 0);
       expect(config.endpoint, isEmpty);
       expect(config.privateKeyIncluded, isFalse);
     });

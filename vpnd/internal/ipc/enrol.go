@@ -34,12 +34,7 @@ func (s *Server) enrol(ctx context.Context, params protocol.EnrollParams) (any, 
 		}
 	}
 
-	label := params.Label
-	if label == "" {
-		label = "This computer"
-	}
-
-	result, err := s.newClient(address).Enrol(ctx, params.InviteToken, label, params.Platform)
+	result, err := s.newClient(address).Enrol(ctx, params.InviteToken)
 	if err != nil {
 		// Logged without the code: it is a credential, and this is the one
 		// path where a failure tempts someone to log the request verbatim.

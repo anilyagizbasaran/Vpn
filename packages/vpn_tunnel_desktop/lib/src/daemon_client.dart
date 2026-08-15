@@ -89,7 +89,9 @@ class DaemonClient {
     } on FormatException {
       // A daemon that emits garbage is a daemon we cannot trust to be driving
       // a tunnel correctly; drop the connection rather than guess.
-      _teardown(const FormatException('the VPN service sent an unreadable message'));
+      _teardown(
+        const FormatException('the VPN service sent an unreadable message'),
+      );
       return;
     }
 
@@ -128,7 +130,9 @@ class DaemonClient {
     Duration timeout = const Duration(seconds: 30),
   }) async {
     if (_closed) {
-      throw const TunnelException('The connection to the VPN service was lost.');
+      throw const TunnelException(
+        'The connection to the VPN service was lost.',
+      );
     }
 
     final id = _nextId++;
@@ -145,7 +149,10 @@ class DaemonClient {
       _socket.write('${jsonEncode(request)}\n');
     } on Object catch (error) {
       _pending.remove(id);
-      throw TunnelException('The VPN service could not be reached.', cause: error);
+      throw TunnelException(
+        'The VPN service could not be reached.',
+        cause: error,
+      );
     }
 
     final Map<String, dynamic> response;

@@ -17,7 +17,7 @@ describe('enrolment', () => {
     // Enrolment allocates an address on every allocatable node, so there has
     // to be one; without it every case here fails as 422 for the wrong reason.
     await addNode(harness.container, { region: 'test', isDefault: true });
-    ({ token } = await harness.container.invites.mint({ label: 'test', deviceLimit: 2 }));
+    ({ token } = await harness.container.invites.mint({ deviceLimit: 2 }));
   });
 
   it('turns an invite into a working device in one call', async () => {
@@ -40,14 +40,17 @@ describe('enrolment', () => {
       .expect(401);
   });
 
-  it('refuses a revoked invite', async () => {
-    const minted = await harness.container.invites.mint({ label: 'gone', deviceLimit: 5 });
-    await harness.container.invites.revoke(minted.invite.id);
+  it('refuses a code that has been rotated away', async () => {
+    const minted = await harness.container.invites.mint({ deviceLimit: 5 });
+    await harness.container.invites.rotate(minted.invite.id);
 
+    // 401, not 403: rotating overwrites the hash, so the old code is simply
+    // not a code any more. Nothing records that it once was, which is why
+    // there is no answer that could tell "revoked" from "never existed".
     await request(app)
       .post('/enroll')
       .send({ inviteToken: minted.token, publicKey: KEY('c') })
-      .expect(403);
+      .expect(401);
   });
 
   it('enforces the invite own device limit, not a global one', async () => {

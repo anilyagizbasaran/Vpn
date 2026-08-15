@@ -60,57 +60,30 @@ class DeviceLocation {
   );
 }
 
-class UsageTotals {
-  const UsageTotals({required this.rxBytes, required this.txBytes});
-
-  final int rxBytes;
-  final int txBytes;
-
-  factory UsageTotals.fromJson(Map<String, dynamic>? json) => UsageTotals(
-    rxBytes: (json?['rxBytes'] as num?)?.toInt() ?? 0,
-    txBytes: (json?['txBytes'] as num?)?.toInt() ?? 0,
-  );
-}
-
-/// What the user manages and what the quota counts: one keypair, however many
-/// regions it can reach.
+/// One keypair, however many regions it can reach.
+///
+/// Three fields, because three is all the server has. It used to carry a
+/// label, a platform, a created-at date and byte counters; none of that was
+/// needed to build a tunnel, and all of it was a record of somebody's device
+/// and habits sitting in a database. The server does not keep it any more, so
+/// there is nothing here to parse.
 class Device {
   const Device({
     required this.id,
-    required this.label,
-    required this.platform,
     required this.publicKey,
-    required this.createdAt,
-    required this.keyRotatedAt,
     required this.locations,
-    required this.usage,
   });
 
   final int id;
-  final String label;
-
-  /// `android`, `ios`, `windows`, `macos`, `linux`, or `unknown`.
-  final String platform;
   final String publicKey;
-  final String createdAt;
-
-  /// Null until the device has rotated its key at least once.
-  final String? keyRotatedAt;
-
   final List<DeviceLocation> locations;
-  final UsageTotals usage;
 
   factory Device.fromJson(Map<String, dynamic> json) => Device(
     id: (json['id'] as num).toInt(),
-    label: json['label'] as String? ?? 'Device',
-    platform: json['platform'] as String? ?? 'unknown',
     publicKey: json['publicKey'] as String,
-    createdAt: json['createdAt'] as String? ?? '',
-    keyRotatedAt: json['keyRotatedAt'] as String?,
     locations: ((json['locations'] as List<dynamic>?) ?? const [])
         .map((item) => DeviceLocation.fromJson(item as Map<String, dynamic>))
         .toList(growable: false),
-    usage: UsageTotals.fromJson(json['usage'] as Map<String, dynamic>?),
   );
 }
 

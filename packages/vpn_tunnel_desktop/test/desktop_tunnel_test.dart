@@ -47,18 +47,23 @@ class FakeDaemon {
         .cast<List<int>>()
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen((line) async {
-          if (line.trim().isEmpty) return;
-          final request = jsonDecode(line) as Map<String, dynamic>;
-          requests.add(request);
-          await _reply(socket, request);
-        }, onError: (_) {}, cancelOnError: true);
+        .listen(
+          (line) async {
+            if (line.trim().isEmpty) return;
+            final request = jsonDecode(line) as Map<String, dynamic>;
+            requests.add(request);
+            await _reply(socket, request);
+          },
+          onError: (_) {},
+          cancelOnError: true,
+        );
   }
 
   Future<void> _reply(Socket socket, Map<String, dynamic> request) async {
     final id = request['id'];
-    void ok(Object? result) =>
-        socket.write('${jsonEncode({'id': id, 'ok': true, 'result': result})}\n');
+    void ok(Object? result) => socket.write(
+      '${jsonEncode({'id': id, 'ok': true, 'result': result})}\n',
+    );
     void fail(String code, String message) => socket.write(
       '${jsonEncode({
         'id': id,
@@ -69,7 +74,11 @@ class FakeDaemon {
 
     switch (request['method']) {
       case 'version':
-        ok({'version': 'test', 'platform': 'test', 'protocol': protocolVersion});
+        ok({
+          'version': 'test',
+          'platform': 'test',
+          'protocol': protocolVersion,
+        });
       case 'status':
       case 'subscribe':
         ok({'stage': stage, 'interface': 'vpn0'});
@@ -160,7 +169,8 @@ void main() {
 
     test('explains that the service is not running when it is not', () async {
       final missing = DesktopTunnel(
-        socketPath: '${Directory.systemTemp.path}${Platform.pathSeparator}nope.sock',
+        socketPath:
+            '${Directory.systemTemp.path}${Platform.pathSeparator}nope.sock',
       );
 
       await expectLater(
@@ -185,10 +195,7 @@ void main() {
 
       // Two sockets would mean two subscriptions and every event delivered
       // twice.
-      expect(
-        daemon.requests.where((r) => r['method'] == 'version').length,
-        1,
-      );
+      expect(daemon.requests.where((r) => r['method'] == 'version').length, 1);
     });
   });
 
@@ -205,7 +212,10 @@ void main() {
       final params = up['params'] as Map<String, dynamic>;
       expect(params['config'], contains('PrivateKey = k'));
       expect(params['serverAddress'], 'vpn.test:51820');
-      await expectLater(tunnel.currentStage(), completion(TunnelStage.connected));
+      await expectLater(
+        tunnel.currentStage(),
+        completion(TunnelStage.connected),
+      );
     });
 
     test('surfaces the daemon rejection message verbatim', () async {
@@ -296,11 +306,17 @@ void main() {
 
   group('stageFromDaemon', () {
     test('maps every stage the daemon can report', () {
-      expect(stageFromDaemon(DaemonStage.disconnected), TunnelStage.disconnected);
+      expect(
+        stageFromDaemon(DaemonStage.disconnected),
+        TunnelStage.disconnected,
+      );
       expect(stageFromDaemon(DaemonStage.preparing), TunnelStage.preparing);
       expect(stageFromDaemon(DaemonStage.connecting), TunnelStage.connecting);
       expect(stageFromDaemon(DaemonStage.connected), TunnelStage.connected);
-      expect(stageFromDaemon(DaemonStage.disconnecting), TunnelStage.disconnecting);
+      expect(
+        stageFromDaemon(DaemonStage.disconnecting),
+        TunnelStage.disconnecting,
+      );
       expect(stageFromDaemon(DaemonStage.failed), TunnelStage.failed);
     });
 

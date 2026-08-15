@@ -29,14 +29,17 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
-  test('short-circuits without touching the channel when unsupported', () async {
-    mock((_) => true);
-    final settings = SystemSettings(isSupported: false, channel: channel);
+  test(
+    'short-circuits without touching the channel when unsupported',
+    () async {
+      mock((_) => true);
+      final settings = SystemSettings(isSupported: false, channel: channel);
 
-    await expectLater(settings.openVpnSettings(), completion(isFalse));
-    await expectLater(settings.isAlwaysOnSupported(), completion(isFalse));
-    expect(calls, isEmpty);
-  });
+      await expectLater(settings.openVpnSettings(), completion(isFalse));
+      await expectLater(settings.isAlwaysOnSupported(), completion(isFalse));
+      expect(calls, isEmpty);
+    },
+  );
 
   test('passes through a successful open', () async {
     mock((_) => true);

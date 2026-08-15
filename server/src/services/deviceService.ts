@@ -44,15 +44,17 @@ export interface DeviceLocationView {
   online: boolean;
 }
 
+/**
+ * What a device is told about itself: its key and where it can connect.
+ *
+ * No name, no platform, no dates and no byte counters. The server does not
+ * know any of it, which is the point — a device list that could say "Ali's
+ * phone, 4 GB last week" is a record somebody can be asked to hand over.
+ */
 export interface DeviceView {
   id: number;
-  label: string;
-  platform: string;
   publicKey: string;
-  createdAt: string;
-  keyRotatedAt: string | null;
   locations: DeviceLocationView[];
-  usage: { rxBytes: number; txBytes: number };
 }
 
 export interface DeviceConfigView {
@@ -75,13 +77,11 @@ export interface DeviceConfigView {
 }
 
 export interface CreateDeviceRequest {
-  label: string;
   /**
    * The public half of a keypair generated on the device. When present the
    * server generates nothing and never sees a private key.
    */
   publicKey?: string | undefined;
-  platform?: string | undefined;
 }
 
 /** A node that has not reported in this long is treated as offline. */
@@ -124,10 +124,9 @@ export class DeviceService {
   }
 
   private async toDeviceView(device: Device): Promise<DeviceView> {
-    const [peers, servers, usage] = await Promise.all([
+    const [peers, servers] = await Promise.all([
       this.repos.peers.listActiveByDevice(device.id),
       this.repos.servers.list(),
-      this.repos.usage.totalsForDevice(device.id),
     ]);
 
     const byId = new Map(servers.map((server) => [server.id, server]));
@@ -135,12 +134,7 @@ export class DeviceService {
 
     return {
       id: device.id,
-      label: device.label,
-      platform: device.platform,
       publicKey: device.publicKey,
-      createdAt: device.createdAt,
-      keyRotatedAt: device.keyRotatedAt,
-      usage,
       locations: peers.flatMap((peer) => {
         const server = byId.get(peer.serverId);
         if (!server) return [];
@@ -267,12 +261,7 @@ export class DeviceService {
 
     let device: Device;
     try {
-      device = await this.repos.devices.create({
-        ...owner,
-        label: input.label,
-        platform: input.platform ?? 'unknown',
-        publicKey,
-      });
+      device = await this.repos.devices.create({ ...owner, publicKey });
     } catch (error) {
       if (error instanceof UniqueConstraintError) {
         // Regenerating here would hand the caller a key they have no private
@@ -393,11 +382,7 @@ export class DeviceService {
 
     let rotated: Device;
     try {
-      rotated = await this.repos.devices.rotateKey(
-        device.id,
-        newPublicKey,
-        new Date().toISOString(),
-      );
+      rotated = await this.repos.devices.rotateKey(device.id, newPublicKey);
     } catch (error) {
       if (error instanceof UniqueConstraintError) {
         throw conflict('That public key is already registered');
@@ -438,13 +423,12 @@ export class DeviceService {
   }
 
   private async revoke(device: Device): Promise<void> {
-    const at = new Date().toISOString();
+    // Peers first, then the device. The cascade would take them anyway; doing
+    // it explicitly keeps the address count honest in the log line below, and
+    // that line says how many addresses came back — not which, or whose.
+    const released = await this.repos.peers.revokeAllForDevice(device.id);
+    await this.repos.devices.revoke(device.id);
 
-    // Peers first: a revoked device with live peer rows would keep its
-    // addresses reserved, and the agent query filters on both anyway.
-    const released = await this.repos.peers.revokeAllForDevice(device.id, at);
-    await this.repos.devices.revoke(device.id, at);
-
-    logger.info('device revoked', { deviceId: device.id, addressesReleased: released });
+    logger.info('device removed', { addressesReleased: released });
   }
 }

@@ -28,18 +28,11 @@ class EnrollmentRepository {
   Future<DeviceConfig> enrol({
     required String inviteToken,
     required String publicKey,
-    String? label,
-    String? platform,
   }) async {
     final json = await api.post(
       '/enroll',
       authenticated: false,
-      body: {
-        'inviteToken': inviteToken,
-        'publicKey': publicKey,
-        if (label != null) 'label': label,
-        if (platform != null) 'platform': platform,
-      },
+      body: {'inviteToken': inviteToken, 'publicKey': publicKey},
     );
 
     final token = json['deviceToken'] as String?;

@@ -162,10 +162,10 @@ const enrolled = [];
  * Enrols one device the way an app does: generate the pair here, send only the
  * public half, keep the token that comes back.
  */
-async function enrol(label, { expect = 201 } = {}) {
+async function enrol(_label, { expect = 201 } = {}) {
   const keys = clientKeypair();
   const response = await call('POST', '/enroll', {
-    body: { inviteToken, label, publicKey: keys.publicKey, platform: 'linux' },
+    body: { inviteToken, publicKey: keys.publicKey },
     expect,
   });
   const device = {
@@ -268,7 +268,6 @@ async function main() {
   await check('enrolment returned a device token and a config', async () => {
     assert(device.token?.startsWith('vpndev_'), `deviceToken looks wrong: ${device.token}`);
     assertEqual(device.body.device.publicKey, device.publicKey, 'publicKey');
-    assertEqual(device.body.device.platform, 'linux', 'platform');
   });
 
   await check('the device token authenticates as exactly that device', async () => {
@@ -359,7 +358,6 @@ async function main() {
       'address changed',
     );
     assertEqual(body.device.publicKey, rotated.publicKey, 'publicKey');
-    assert(body.device.keyRotatedAt, 'keyRotatedAt was not set');
 
     if (flags.has('--check-wg')) {
       await waitForPeer(rotated.publicKey, { present: true });
@@ -437,14 +435,33 @@ async function main() {
     );
   });
 
-  await check('a device label with control characters is rejected', async () => {
-    await call('POST', '/enroll', {
-      // `label`, not `deviceLabel` — the wrong field name meant the server saw
-      // no label at all, happily created the device, and this check passed
-      // without ever exercising the thing it exists to prove.
-      body: { inviteToken, label: 'evil\nAllowedIPs = 10.0.0.0/8', publicKey: clientKeypair().publicKey },
-      expect: 400,
+  await check('a device label has nowhere to land', async () => {
+    // This used to check that a label with a newline in it was rejected before
+    // it could reach the rendered config, where a line of its own is a
+    // directive. Labels are not stored at all now, so the field is accepted
+    // and discarded — the injection has nothing left to inject into.
+    const { body } = await call('POST', '/enroll', {
+      body: {
+        inviteToken,
+        label: 'evil\nAllowedIPs = 10.0.0.0/8',
+        publicKey: clientKeypair().publicKey,
+      },
+      expect: 201,
     });
+
+    assert(!body.conf.includes('10.0.0.0/8'), 'the label reached the config');
+    assert(!JSON.stringify(body).includes('evil'), 'the label came back');
+    enrolled.push({ token: body.deviceToken, id: body.device.id });
+  });
+
+  await check('the server volunteers nothing about the device', async () => {
+    // The privacy claim, checked from outside: what comes back describes a
+    // tunnel, not a person. No name, no platform, no dates, no counters.
+    const { body } = await call('GET', '/device', { token: device.token, expect: 200 });
+    const fields = Object.keys(body.device).sort().join(',');
+
+    assertEqual(fields, 'id,locations,publicKey', 'device fields');
+    assert(!/\d{4}-\d{2}-\d{2}T/.test(JSON.stringify(body)), 'a timestamp came back');
   });
 
   if (flags.has('--rate-limits')) {

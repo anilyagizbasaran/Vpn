@@ -24,7 +24,7 @@ describe('invites', () => {
   });
 
   it('shows the token once and stores only its hash', async () => {
-    const { invite, token } = await invites.mint({ label: 'Ali', deviceLimit: 3 });
+    const { invite, token } = await invites.mint({ deviceLimit: 3 });
 
     // Ten characters someone can read off a screen and type on a phone. The
     // alphabet leaves out I, L, O and U, so no character's shape has to be
@@ -38,7 +38,7 @@ describe('invites', () => {
   });
 
   it('resolves a token back to its invite', async () => {
-    const { invite, token } = await invites.mint({ label: 'phone', deviceLimit: 5 });
+    const { invite, token } = await invites.mint({ deviceLimit: 5 });
     await expect(invites.resolve(token)).resolves.toMatchObject({ id: invite.id });
   });
 
@@ -49,14 +49,14 @@ describe('invites', () => {
   it('does not repeat itself', async () => {
     const seen = new Set<string>();
     for (let i = 0; i < 200; i += 1) {
-      const { token } = await invites.mint({ label: `n${i}` });
+      const { token } = await invites.mint({});
       seen.add(token);
     }
     expect(seen.size).toBe(200);
   });
 
   it('accepts a code typed the way someone would write it down', async () => {
-    const { invite, token } = await invites.mint({ label: 'phone' });
+    const { invite, token } = await invites.mint({});
 
     // Lower case, spaced into groups, and with the letters a reader
     // substitutes for 0 and 1 without noticing they have.
@@ -73,11 +73,9 @@ describe('invites', () => {
   });
 
   it('rotating replaces the code without disturbing the devices', async () => {
-    const { invite, token } = await invites.mint({ label: 'phone' });
+    const { invite, token } = await invites.mint({});
     await repos.devices.create({
       inviteId: invite.id,
-      label: 'laptop',
-      platform: 'linux',
       publicKey: Buffer.alloc(32, 1).toString('base64'),
       tokenHash: 'device-hash',
     });
@@ -93,22 +91,17 @@ describe('invites', () => {
     await expect(repos.devices.countActiveByInvite(invite.id)).resolves.toBe(1);
   });
 
-  it('rotating brings a revoked invite back', async () => {
-    const { invite } = await invites.mint({ label: 'phone' });
-    await invites.revoke(invite.id);
+  it('leaves nothing behind that says a code once existed', async () => {
+    const { invite, token } = await invites.mint({ deviceLimit: 1 });
+    await invites.rotate(invite.id);
 
-    const rotated = await invites.rotate(invite.id);
-    if (!rotated) throw new Error('rotate returned nothing');
+    // Rotation overwrites the hash in place. The old code does not resolve,
+    // and no row anywhere records that it used to — which is why the answer
+    // is "not valid" rather than "revoked".
+    await expect(invites.resolve(token)).rejects.toMatchObject({ status: 401 });
 
-    // Otherwise rotating hands out a code that enrolment refuses with "that
-    // code has been revoked", which reads as a bug in the rotation.
-    await expect(invites.resolve(rotated.token)).resolves.toMatchObject({ id: invite.id });
-  });
-
-  it('rejects a revoked invite, and says so rather than pretending it never existed', async () => {
-    const { invite, token } = await invites.mint({ label: 'old laptop', deviceLimit: 1 });
-    await invites.revoke(invite.id);
-    await expect(invites.resolve(token)).rejects.toMatchObject({ status: 403 });
+    const stored = await repos.invites.findById(invite.id);
+    expect(JSON.stringify(stored)).not.toContain(token);
   });
 
   it('will not accept a device token at enrolment', async () => {
@@ -120,12 +113,10 @@ describe('invites', () => {
   });
 
   it('resolves a device by its own token', async () => {
-    const { invite } = await invites.mint({ label: 'laptop', deviceLimit: 5 });
+    const { invite } = await invites.mint({ deviceLimit: 5 });
     const { token, tokenHash } = invites.mintDeviceToken();
     const device = await repos.devices.create({
       inviteId: invite.id,
-      label: 'Laptop',
-      platform: 'linux',
       publicKey: 'a'.repeat(43) + '=',
       tokenHash,
     });
@@ -134,31 +125,42 @@ describe('invites', () => {
   });
 
   it('stops resolving a device once it is revoked', async () => {
-    const { invite } = await invites.mint({ label: 'laptop', deviceLimit: 5 });
+    const { invite } = await invites.mint({ deviceLimit: 5 });
     const { token, tokenHash } = invites.mintDeviceToken();
     const device = await repos.devices.create({
       inviteId: invite.id,
-      label: 'Laptop',
-      platform: 'linux',
       publicKey: 'b'.repeat(43) + '=',
       tokenHash,
     });
-    await repos.devices.revoke(device.id, new Date().toISOString());
+    await repos.devices.revoke(device.id);
 
     await expect(invites.resolveDevice(token)).rejects.toMatchObject({ status: 401 });
   });
 
   it('counts devices per invite, which is what the quota will use', async () => {
-    const { invite } = await invites.mint({ label: 'family', deviceLimit: 2 });
+    const { invite } = await invites.mint({ deviceLimit: 2 });
     for (const c of ['c', 'd']) {
       await repos.devices.create({
         inviteId: invite.id,
-        label: 'Device',
-        platform: 'unknown',
         publicKey: c.repeat(43) + '=',
         tokenHash: invites.mintDeviceToken().tokenHash,
       });
     }
     await expect(repos.devices.countActiveByInvite(invite.id)).resolves.toBe(2);
+  });
+
+  it('is found by listing, which is how the vpn command finds it', async () => {
+    // `vpn status` takes the first invite there is. It used to search by a
+    // label; when the schema dropped every field a tunnel does not need, the
+    // search matched nothing and each run quietly minted a new code — so the
+    // code written down still worked, but was no longer the one the server
+    // would tell you about.
+    const { invite } = await invites.mint({});
+
+    const [first] = await repos.invites.list();
+    expect(first?.id).toBe(invite.id);
+
+    // And the shape it would search through has nothing to search on.
+    expect(Object.keys(first!).sort()).toEqual(['deviceLimit', 'id', 'tokenHash']);
   });
 });

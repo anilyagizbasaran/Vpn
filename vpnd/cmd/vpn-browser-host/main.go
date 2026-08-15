@@ -23,7 +23,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"runtime"
 	"time"
 
 	"vpnd/internal/ipc"
@@ -109,8 +108,6 @@ func handle(req request, socketPath string) reply {
 		params, err := json.Marshal(protocol.EnrollParams{
 			ServerAddress: req.ServerAddress,
 			InviteToken:   req.InviteToken,
-			Label:         "Browser extension",
-			Platform:      hostPlatform(),
 		})
 		if err != nil {
 			return reply{Error: "The enrolment request could not be encoded."}
@@ -159,21 +156,6 @@ func methodFor(action string) (string, bool) {
 		return protocol.MethodEnroll, true
 	default:
 		return "", false
-	}
-}
-
-// hostPlatform labels the device in the operator's device list. Best effort:
-// a wrong label is cosmetic, and it is never used for a decision.
-func hostPlatform() string {
-	switch runtime.GOOS {
-	case "windows":
-		return "windows"
-	case "darwin":
-		return "macos"
-	case "linux":
-		return "linux"
-	default:
-		return "unknown"
 	}
 }
 

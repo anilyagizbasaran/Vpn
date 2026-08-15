@@ -49,10 +49,7 @@ const goodConf = "[Interface]\nPrivateKey = <PRIVATE_KEY>\nAddress = 10.8.0.2/32
 	"[Peer]\nPublicKey = c2VydmVycHVibGlja2V5c2VydmVycHVibGlja2V5c2VydmU=\n" +
 	"AllowedIPs = 0.0.0.0/0\nEndpoint = vpn.test:51820\n"
 
-func (s *stubEnroller) Enrol(
-	_ context.Context,
-	inviteToken, _, _ string,
-) (enroll.Result, error) {
+func (s *stubEnroller) Enrol(_ context.Context, inviteToken string) (enroll.Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

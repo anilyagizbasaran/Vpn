@@ -21,9 +21,10 @@ Future<void> main() async {
   try {
     final address = InternetAddress(path, type: InternetAddressType.unix);
 
-    final server = await ServerSocket.bind(address, 0).timeout(
-      const Duration(seconds: 5),
-    );
+    final server = await ServerSocket.bind(
+      address,
+      0,
+    ).timeout(const Duration(seconds: 5));
     server.listen((socket) {
       socket.write('pong');
       socket.close();
@@ -44,8 +45,10 @@ Future<void> main() async {
       File(path).deleteSync();
     } catch (_) {}
 
-    stdout.writeln('SUPPORTED on ${Platform.operatingSystem}: '
-        '${String.fromCharCodes(reply)}');
+    stdout.writeln(
+      'SUPPORTED on ${Platform.operatingSystem}: '
+      '${String.fromCharCodes(reply)}',
+    );
     exit(0);
   } on TimeoutException {
     stdout.writeln('UNSUPPORTED on ${Platform.operatingSystem}: timed out');

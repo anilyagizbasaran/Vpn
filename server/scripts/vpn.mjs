@@ -1,14 +1,17 @@
 /**
  * The whole of user management, as four verbs.
  *
- *   vpn status              is a code set, and how many devices are on it
- *   vpn devices             one line per device: what it is, when, how much
- *   vpn revoke <id>         cut off one device, freeing its address
+ *   vpn status              is a code set, and how many devices it enrolled
+ *   vpn howmanydevice       how many are connected right now (runs on the host)
  *   vpn reset [--kick]      new code; --kick also removes every device
  *
  * There is nothing else, because there is nothing else to manage. No accounts
  * to moderate, no passwords to reset, no sessions to expire. One code lets a
  * device on; rotating it is how a code that got out stops working.
+ *
+ * And nothing to browse: the database holds a key and an address per device
+ * and not one thing more — no name, no platform, no dates, no byte counters.
+ * A device list would have nothing to put in its columns.
  *
  * A code is shown once and stored only as an HMAC, so `status` can tell you a
  * code exists but never what it is. Losing it is not a problem worth solving
@@ -19,9 +22,6 @@ import { createContainer } from '../dist/container.js';
 const BOLD = '[1m';
 const DIM = '[90m';
 const RESET = '[0m';
-
-/** The one invite this server hands out. */
-const LABEL = 'default';
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -43,23 +43,7 @@ function parseArgs(argv) {
   return args;
 }
 
-/** Bytes as something a person reads without counting digits. */
-function humanBytes(bytes) {
-  if (!bytes) return '0';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(units.length - 1, Math.floor(Math.log10(bytes) / 3));
-  return `${(bytes / 1000 ** index).toFixed(index === 0 ? 0 : 1)}${units[index]}`;
-}
 
-/** "3 days ago", or "never". Absolute dates make you do arithmetic. */
-function ago(iso) {
-  if (!iso) return 'never';
-  const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
-  if (seconds < 90) return 'just now';
-  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 172_800) return `${Math.round(seconds / 3600)} hours ago`;
-  return `${Math.round(seconds / 86_400)} days ago`;
-}
 
 function printCode(token) {
   console.log(`
@@ -77,12 +61,14 @@ const container = await createContainer({ skipBootstrapNode: true });
 
 /** The single invite, created on first use so no command ever has to fail. */
 async function theInvite() {
-  const existing = (await container.repos.invites.list()).find(
-    (invite) => invite.label === LABEL,
-  );
+  // The lowest id, because there is only ever one. This used to look the
+  // invite up by a label — which stopped existing when the schema dropped
+  // every field that was not needed to run a tunnel, so the lookup silently
+  // matched nothing and every `vpn status` minted a fresh code.
+  const [existing] = await container.repos.invites.list();
   if (existing) return { invite: existing, token: null };
 
-  const minted = await container.invites.mint({ label: LABEL });
+  const minted = await container.invites.mint();
   return { invite: minted.invite, token: minted.token };
 }
 
@@ -103,59 +89,24 @@ try {
       console.log(`\n  ${DIM}No code existed yet, so here is one.${RESET}`);
       printCode(token);
     } else {
+      // The code itself cannot be shown: only its HMAC is stored. So this says
+      // what to do instead of what is missing — someone who lost their code
+      // should not have to work out that a new one is free.
       console.log(`
-  Code       ${BOLD}set${RESET} ${DIM}(shown only once, at reset)${RESET}
-  Devices    ${BOLD}${devices}${RESET} connected${devices ? `  ${DIM}— see them with: vpn devices${RESET}` : ''}
-  Last used  ${ago(invite.lastUsedAt)}
+  Code       ${BOLD}set${RESET} ${DIM}— not shown again; run ${RESET}vpn reset${DIM} for a new one${RESET}
+  Devices    ${BOLD}${devices}${RESET} enrolled${devices ? `  ${DIM}— connected right now: vpn howmanydevice${RESET}` : ''}
+
+  ${DIM}Only the code's HMAC is stored, so it cannot be read back. A new code
+  costs nothing: the devices already connected keep working.${RESET}
 `);
     }
     process.exit(0);
   }
 
-  if (command === 'devices') {
-    const { invite } = await theInvite();
-    const devices = await container.devices.listForInvite(invite.id);
-
-    if (devices.length === 0) {
-      console.log(`\n  No devices yet. Run ${BOLD}vpn reset${RESET} for a code, then enter it in the app.\n`);
-      process.exit(0);
-    }
-
-    console.log('');
-    for (const device of devices) {
-      const traffic = device.usage
-        ? `${humanBytes(device.usage.rxBytes + device.usage.txBytes)}`
-        : '0';
-      console.log(
-        `  ${String(device.id).padStart(3)}  ${device.label.slice(0, 22).padEnd(24)}` +
-          `${device.platform.padEnd(9)}${traffic.padStart(8)}   ` +
-          `${DIM}enrolled ${ago(device.createdAt)}${RESET}`,
-      );
-    }
-    console.log(`\n  ${DIM}Remove one with: vpn revoke <id>${RESET}\n`);
-    process.exit(0);
-  }
-
-  if (command === 'revoke') {
-    const id = Number(args._[1]);
-    if (!Number.isInteger(id)) {
-      console.error('\n  Usage: vpn revoke <id>   — the id from `vpn devices`\n');
-      process.exit(2);
-    }
-
-    const device = await container.repos.devices.findById(id);
-    if (!device || device.revokedAt) {
-      console.error(`\n  No device ${id}. Run \`vpn devices\` to see the list.\n`);
-      process.exit(1);
-    }
-
-    await container.devices.revokeOwn(device);
-    console.log(
-      `\n  Device ${id} (${device.label}) removed. It leaves the interface on the` +
-        ` nodes' next sync,\n  and its address goes back into the pool.\n`,
-    );
-    process.exit(0);
-  }
+  // There is no per-device revoke, because there is nothing to pick from: the
+  // server holds a key and an address per device and nothing that says which
+  // is whose. Cutting one person off without the others would need exactly the
+  // record this server refuses to keep. `vpn reset --kick` removes everybody.
 
   if (command === 'reset') {
     const { invite, token } = await theInvite();
@@ -194,9 +145,8 @@ try {
 
   console.error(`
   Usage:
-    vpn status              is a code set, and how many devices are on it
-    vpn devices             one line per device
-    vpn revoke <id>         cut off one device
+    vpn status              is a code set, and how many devices it enrolled
+    vpn howmanydevice       how many are connected right now
     vpn reset               new code; devices stay connected
     vpn reset --kick        new code and remove every device
 

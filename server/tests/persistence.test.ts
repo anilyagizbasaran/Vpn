@@ -24,15 +24,12 @@ const nextToken = () => `hash-${(tokenCounter += 1)}`;
 
 async function seed() {
   const invite = await repos.invites.create({
-    label: 'a',
     tokenHash: nextToken(),
     deviceLimit: 5,
   });
   const server = await repos.servers.upsertByRegion(serverInput());
   const device = await repos.devices.create({
     inviteId: invite.id,
-    label: 'phone',
-    platform: 'android',
     publicKey: key(1),
     tokenHash: nextToken(),
   });
@@ -108,12 +105,16 @@ describe('migrations', () => {
 
     migrate(old);
 
-    const devices = old.prepare('SELECT label FROM devices').all() as { label: string }[];
+    // `label` is gone by v8, so the survivor is identified by the key it was
+    // inserted with rather than by a name that no longer exists anywhere.
+    const devices = old.prepare('SELECT public_key FROM devices').all() as {
+      public_key: string;
+    }[];
     const peers = old.prepare('SELECT allowed_ip FROM peers').all() as { allowed_ip: string }[];
 
     // The account device goes; it holds no credential it could authenticate
     // with, so keeping it would only reserve an address nobody can reclaim.
-    expect(devices.map((d) => d.label)).toEqual(['enrolled laptop']);
+    expect(devices.map((d) => d.public_key)).toEqual(['newkey']);
 
     // ...and the surviving device keeps its address. Migrations run with
     // foreign keys off, so nothing here happens by cascade: rebuilding
@@ -122,6 +123,55 @@ describe('migrations', () => {
     expect(peers.map((p) => p.allowed_ip)).toEqual(['10.8.0.3/32']);
 
     old.close();
+  });
+
+  it('stores nothing but what a tunnel needs', async () => {
+    // The guarantee, written as a test so it cannot quietly erode: after a
+    // device enrols, the whole database holds a key, an address, and two
+    // hashes. No name, no platform, no timestamp, no byte counter, and above
+    // all nobody's real IP address.
+    const { invite, server, device } = await seed();
+    await repos.peers.create({
+      deviceId: device.id,
+      serverId: server.id,
+      allowedIp: '10.8.0.2/32',
+      presharedKeyEnc: null,
+    });
+
+    const columns = (table: string) =>
+      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+
+    expect(columns('invites').sort()).toEqual(['device_limit', 'id', 'token_hash']);
+    expect(columns('devices').sort()).toEqual([
+      'id',
+      'invite_id',
+      'public_key',
+      'token_hash',
+    ]);
+    expect(columns('peers').sort()).toEqual([
+      'allowed_ip',
+      'device_id',
+      'id',
+      'preshared_key_enc',
+      'server_id',
+    ]);
+
+    // And no table anywhere that could hold usage or history.
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+        name: string;
+      }[]
+    ).map((t) => t.name);
+    expect(tables).not.toContain('peer_usage');
+
+    // Belt and braces: nothing in the device or peer rows looks like a date.
+    const rows = JSON.stringify([
+      db.prepare('SELECT * FROM devices').all(),
+      db.prepare('SELECT * FROM peers').all(),
+      db.prepare('SELECT * FROM invites').all(),
+    ]);
+    expect(rows).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    expect(invite.id).toBeGreaterThan(0);
   });
 
   it('leaves no trace of accounts behind', () => {
@@ -192,8 +242,6 @@ describe('invites', () => {
     await expect(
       repos.devices.create({
         inviteId: invite.id,
-        label: 'clone',
-        platform: 'ios',
         publicKey: key(8),
         tokenHash: device.tokenHash,
       }),
@@ -208,8 +256,6 @@ describe('devices', () => {
     await expect(
       repos.devices.create({
         inviteId: invite.id,
-        label: 'clone',
-        platform: 'ios',
         publicKey: key(1),
         tokenHash: nextToken(),
       }),
@@ -218,13 +264,11 @@ describe('devices', () => {
 
   it('frees the key for reuse once a device is revoked', async () => {
     const { invite, device } = await seed();
-    await repos.devices.revoke(device.id, new Date().toISOString());
+    await repos.devices.revoke(device.id);
 
     await expect(
       repos.devices.create({
         inviteId: invite.id,
-        label: 'replacement',
-        platform: 'ios',
         publicKey: key(1),
         tokenHash: nextToken(),
       }),
@@ -234,20 +278,17 @@ describe('devices', () => {
   it('counts only live devices, per invite', async () => {
     const { invite, device } = await seed();
     const other = await repos.invites.create({
-      label: 'b',
       tokenHash: nextToken(),
       deviceLimit: 5,
     });
     await repos.devices.create({
       inviteId: other.id,
-      label: 'theirs',
-      platform: 'linux',
       publicKey: key(9),
       tokenHash: nextToken(),
     });
 
     await expect(repos.devices.countActiveByInvite(invite.id)).resolves.toBe(1);
-    await repos.devices.revoke(device.id, new Date().toISOString());
+    await repos.devices.revoke(device.id);
     await expect(repos.devices.countActiveByInvite(invite.id)).resolves.toBe(0);
     await expect(repos.devices.countActiveByInvite(other.id)).resolves.toBe(1);
   });
@@ -261,10 +302,9 @@ describe('devices', () => {
       presharedKeyEnc: null,
     });
 
-    const rotated = await repos.devices.rotateKey(device.id, key(2), new Date().toISOString());
+    const rotated = await repos.devices.rotateKey(device.id, key(2));
 
     expect(rotated.publicKey).toBe(key(2));
-    expect(rotated.keyRotatedAt).toBeTruthy();
     // Rotation is a key change, not a reallocation.
     await expect(repos.peers.findById(peer.id)).resolves.toMatchObject({
       allowedIp: '10.8.0.2/32',
@@ -277,8 +317,6 @@ describe('peers — partial unique indexes', () => {
     const { server, device, invite } = await seed();
     const second = await repos.devices.create({
       inviteId: invite.id,
-      label: 'other',
-      platform: 'ios',
       publicKey: key(5),
       tokenHash: nextToken(),
     });
@@ -353,12 +391,10 @@ describe('peers — partial unique indexes', () => {
       presharedKeyEnc: null,
     });
 
-    await expect(repos.peers.revoke(peer.id, new Date().toISOString())).resolves.toBe(true);
+    await expect(repos.peers.revoke(peer.id)).resolves.toBe(true);
 
     const other = await repos.devices.create({
       inviteId: invite.id,
-      label: 'next',
-      platform: 'ios',
       publicKey: key(7),
       tokenHash: nextToken(),
     });
@@ -371,7 +407,9 @@ describe('peers — partial unique indexes', () => {
       }),
     ).resolves.toBeTruthy();
 
-    expect((await repos.peers.findById(peer.id))?.revokedAt).not.toBeNull();
+    // Gone, not flagged: a row saying when an address was given up is a
+    // record of somebody leaving.
+    await expect(repos.peers.findById(peer.id)).resolves.toBeNull();
   });
 
   it('hides a revoked device from the agent view even with live peer rows', async () => {
@@ -383,7 +421,7 @@ describe('peers — partial unique indexes', () => {
       presharedKeyEnc: null,
     });
 
-    await repos.devices.revoke(device.id, new Date().toISOString());
+    await repos.devices.revoke(device.id);
 
     // The agent builds its interface from this query, so a revoked device
     // surviving here would keep working until somebody noticed.
@@ -442,108 +480,5 @@ describe('servers', () => {
     expect(updated?.lastSeenAt).toBe(seenAt);
     expect(updated?.agentVersion).toBe('agent/1.2.3');
     expect(updated?.reportedPublicKey).toBe(key(3));
-  });
-});
-
-describe('usage', () => {
-  async function seedPeer() {
-    const { server, device } = await seed();
-    const peer = await repos.peers.create({
-      deviceId: device.id,
-      serverId: server.id,
-      allowedIp: '10.8.0.2/32',
-      presharedKeyEnc: null,
-    });
-    return { server, device, peer };
-  }
-
-  it('accumulates counters across reports', async () => {
-    const { server, device, peer } = await seedPeer();
-    const at = new Date().toISOString();
-
-    await repos.usage.record(
-      server.id,
-      [{ publicKey: device.publicKey, rxBytes: 100, txBytes: 200, lastHandshakeAt: at }],
-      at,
-    );
-    await repos.usage.record(
-      server.id,
-      [{ publicKey: device.publicKey, rxBytes: 150, txBytes: 260, lastHandshakeAt: at }],
-      at,
-    );
-
-    // Deltas, not the raw readings.
-    await expect(repos.usage.findByPeerId(peer.id)).resolves.toMatchObject({
-      rxBytes: 150,
-      txBytes: 260,
-    });
-  });
-
-  it('treats a counter that went backwards as a restart, not a loss', async () => {
-    const { server, device, peer } = await seedPeer();
-    const at = new Date().toISOString();
-
-    await repos.usage.record(
-      server.id,
-      [{ publicKey: device.publicKey, rxBytes: 1_000, txBytes: 2_000, lastHandshakeAt: at }],
-      at,
-    );
-    // WireGuard restarts a peer's counters whenever it is re-added. Treating
-    // that as a negative delta would erase the user's history.
-    await repos.usage.record(
-      server.id,
-      [{ publicKey: device.publicKey, rxBytes: 50, txBytes: 60, lastHandshakeAt: at }],
-      at,
-    );
-
-    await expect(repos.usage.findByPeerId(peer.id)).resolves.toMatchObject({
-      rxBytes: 1_050,
-      txBytes: 2_060,
-    });
-  });
-
-  it('ignores readings for keys this server does not serve', async () => {
-    const { server } = await seedPeer();
-    const at = new Date().toISOString();
-
-    // An agent reports whatever is on its interface, which can include a peer
-    // revoked moments earlier.
-    const written = await repos.usage.record(
-      server.id,
-      [{ publicKey: key(99), rxBytes: 10, txBytes: 10, lastHandshakeAt: at }],
-      at,
-    );
-
-    expect(written).toBe(0);
-  });
-
-  it('totals a device across every server it uses', async () => {
-    const { server, device } = await seedPeer();
-    const second = await repos.servers.upsertByRegion(
-      serverInput({ region: 'nl-ams', isDefault: false }),
-    );
-    await repos.peers.create({
-      deviceId: device.id,
-      serverId: second.id,
-      allowedIp: '10.8.0.2/32',
-      presharedKeyEnc: null,
-    });
-    const at = new Date().toISOString();
-
-    await repos.usage.record(
-      server.id,
-      [{ publicKey: device.publicKey, rxBytes: 100, txBytes: 100, lastHandshakeAt: at }],
-      at,
-    );
-    await repos.usage.record(
-      second.id,
-      [{ publicKey: device.publicKey, rxBytes: 25, txBytes: 25, lastHandshakeAt: at }],
-      at,
-    );
-
-    await expect(repos.usage.totalsForDevice(device.id)).resolves.toEqual({
-      rxBytes: 125,
-      txBytes: 125,
-    });
   });
 });

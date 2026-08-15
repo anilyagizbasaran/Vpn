@@ -31,7 +31,7 @@ type Server struct {
 // enroller is the slice of [enroll.Client] this package uses, named as an
 // interface so a test can answer without a network or a certificate.
 type enroller interface {
-	Enrol(ctx context.Context, inviteToken, label, platform string) (enroll.Result, error)
+	Enrol(ctx context.Context, inviteToken string) (enroll.Result, error)
 	FetchConfig(ctx context.Context, deviceToken string, keys enroll.Keys) (enroll.Result, error)
 }
 

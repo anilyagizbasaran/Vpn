@@ -35,17 +35,18 @@ import (
 // Version is stamped at build time with -ldflags.
 var Version = "dev"
 
+// What the agent tells the control plane about itself, and nothing about
+// anybody else.
+//
+// It used to send a usage report per peer: bytes in, bytes out, and the last
+// handshake time, keyed by public key. The control plane wrote that down, so
+// the database held a per-device record of when someone was online and how
+// much they moved. The interface still knows all of it — that is unavoidable,
+// it is how WireGuard works — but it now stays in kernel memory on the node
+// and is never written anywhere.
 type syncRequest struct {
-	InterfacePublicKey string        `json:"interfacePublicKey"`
-	AgentVersion       string        `json:"agentVersion"`
-	Usage              []usageReport `json:"usage"`
-}
-
-type usageReport struct {
-	PublicKey       string  `json:"publicKey"`
-	RxBytes         int64   `json:"rxBytes"`
-	TxBytes         int64   `json:"txBytes"`
-	LastHandshakeAt *string `json:"lastHandshakeAt"`
+	InterfacePublicKey string `json:"interfacePublicKey"`
+	AgentVersion       string `json:"agentVersion"`
 }
 
 type syncResponse struct {
@@ -169,29 +170,18 @@ func (a *agent) run(ctx context.Context) {
 }
 
 func (a *agent) syncOnce(ctx context.Context) error {
-	interfaceKey, live, err := a.wg.Dump(ctx)
+	// The dump is still read, for the interface key the control plane compares
+	// against its own record — a node rebuilt with a new key would otherwise
+	// hand every client a config that can never handshake. The per-peer half of
+	// the dump is deliberately discarded.
+	interfaceKey, _, err := a.wg.Dump(ctx)
 	if err != nil {
 		return fmt.Errorf("reading the interface: %w", err)
-	}
-
-	usage := make([]usageReport, 0, len(live))
-	for _, peer := range live {
-		report := usageReport{
-			PublicKey: peer.PublicKey,
-			RxBytes:   peer.RxBytes,
-			TxBytes:   peer.TxBytes,
-		}
-		if !peer.LastHandshake.IsZero() {
-			at := peer.LastHandshake.Format(time.RFC3339)
-			report.LastHandshakeAt = &at
-		}
-		usage = append(usage, report)
 	}
 
 	response, err := a.post(ctx, syncRequest{
 		InterfacePublicKey: interfaceKey,
 		AgentVersion:       "vpn-node-agent/" + Version,
-		Usage:              usage,
 	})
 	if err != nil {
 		return err

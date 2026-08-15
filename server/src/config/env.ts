@@ -66,7 +66,19 @@ const envSchema = z.object({
   WG_ADDRESS_POOL: z.string().min(9).default('10.8.0.0/24'),
   WG_SERVER_ADDRESS: z.string().min(7).default('10.8.0.1'),
   WG_DNS: z.string().default('1.1.1.1, 1.0.0.1'),
-  /** What the client routes into the tunnel. `0.0.0.0/0,::/0` = full tunnel. */
+  /**
+   * What the client routes into the tunnel. `0.0.0.0/0,::/0` = full tunnel.
+   *
+   * `::/0` is here even though this server does not route IPv6, and removing
+   * it would be a leak rather than a tidy-up. It sends the client's IPv6
+   * traffic into a tunnel with no IPv6 address, where it fails immediately and
+   * the client falls back to IPv4. Take it out and that traffic leaves over
+   * the ordinary connection instead, from the user's real address, on every
+   * site that has an AAAA record — which is most of them.
+   *
+   * It is also what makes wireguard.exe install its kill-switch filters; see
+   * vpnd/internal/tunnel/config_test.go.
+   */
   WG_CLIENT_ALLOWED_IPS: z.string().min(1).default('0.0.0.0/0,::/0'),
   WG_PERSISTENT_KEEPALIVE: z.coerce.number().int().min(0).max(3600).default(25),
   // Matches the server interface MTU. Without it the client picks its own,

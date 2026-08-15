@@ -192,6 +192,10 @@ jobs:
         with:
           draft: true
           files: artifacts/**/*
+          # Appends the commits since the previous tag. Written by hand, the
+          # list is the first thing that gets skipped on a release made in a
+          # hurry, and then nobody can tell what changed between two builds.
+          generate_release_notes: true
           body: |
             ## Downloads
 

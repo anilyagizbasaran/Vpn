@@ -60,7 +60,12 @@ class FakeDaemon {
             requests.add(request);
             await _reply(socket, request);
           },
-          onError: (_) {},
+          // Forgotten as soon as it goes away. The enrolment client opens a
+          // connection per call and closes it, so without this the list fills
+          // with dead sockets and the next [emit] writes to one — which on
+          // Linux is a broken pipe rather than the no-op it is on Windows.
+          onError: (_) => _clients.remove(socket),
+          onDone: () => _clients.remove(socket),
           cancelOnError: true,
         );
   }
@@ -138,15 +143,25 @@ class FakeDaemon {
   }
 
   /// Pushes an unsolicited stage event, as the daemon does for subscribers.
+  ///
+  /// Copies the list and tolerates a write failing: a client that went away
+  /// between the last read and this write is ordinary, and the real daemon
+  /// drops it rather than failing the operation that triggered the event.
   void emit(String value) {
-    for (final socket in _clients) {
-      socket.write('${jsonEncode({'event': 'stage', 'stage': value})}\n');
+    for (final socket in List.of(_clients)) {
+      try {
+        socket.write('${jsonEncode({'event': 'stage', 'stage': value})}\n');
+      } on Object {
+        _clients.remove(socket);
+      }
     }
   }
 
   /// Simulates the service being stopped or crashing.
   Future<void> killConnections() async {
-    for (final socket in _clients) {
+    // Over a copy: destroy() completes the socket's stream, which reaches the
+    // onDone above and removes it from this very list.
+    for (final socket in List.of(_clients)) {
       socket.destroy();
     }
     _clients.clear();
@@ -400,8 +415,10 @@ void main() {
     test('a refused code surfaces the daemon message', () async {
       daemon.enrolError = 'That code is not valid.';
 
-      expect(
-        () => enrolment.enrol(
+      // expectLater, not expect: the call returns a Future, and a synchronous
+      // expect leaves the rejection unhandled rather than matching it.
+      await expectLater(
+        enrolment.enrol(
           serverAddress: 'https://vpn.example.com',
           inviteToken: 'nope',
         ),

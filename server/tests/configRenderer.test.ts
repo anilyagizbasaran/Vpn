@@ -100,6 +100,26 @@ describe('renderWgQuickConfig', () => {
     expect(render({ dns: '1.1.1.1,,  8.8.8.8' })).toContain('DNS = 1.1.1.1, 8.8.8.8');
   });
 
+  it('routes IPv6 into the tunnel even though the tunnel has no IPv6', () => {
+    // This server does not route IPv6, and `::/0` looks like dead weight
+    // because of it. It is the opposite: it sends the client's IPv6 traffic
+    // into a tunnel with no IPv6 address, where it fails at once and the
+    // client falls back to IPv4.
+    //
+    // Drop it and that traffic goes out over the ordinary connection instead,
+    // from the user's real address, on every site with an AAAA record. The
+    // change would look like a cleanup and read, in a leak test, as "IPv6 not
+    // protected".
+    const conf = render();
+
+    expect(conf).toContain('::/0');
+
+    // The same string is what makes wireguard.exe install its kill-switch
+    // filters on Windows — a single peer with a default route.
+    expect(conf.match(/^\[Peer\]/gm)).toHaveLength(1);
+    expect(conf).not.toContain('Table');
+  });
+
   it('supports a split-tunnel AllowedIPs without touching anything else', () => {
     const parsed = parseConf(render({ allowedIps: '10.8.0.0/24' }));
     expect(parsed['Peer']?.['AllowedIPs']).toBe('10.8.0.0/24');

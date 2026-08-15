@@ -200,6 +200,15 @@ kept off the bridge: the first hands out a device token, the second is
 destructive and machine-wide. `cmd/vpn-browser-host` asserts both in a test —
 the allowlist is the boundary, so it is checked rather than trusted.
 
+**IPv6 is routed into the tunnel and dropped there, on purpose.** This server
+does not carry IPv6 — the provider does not route it — so `::/0` in AllowedIPs
+looks like dead weight. It is the opposite. It sends the client's IPv6 traffic
+into a tunnel with no IPv6 address, where it fails immediately and the client
+falls back to IPv4. Remove it and that traffic leaves over the ordinary
+connection, from the user's real address, on every site with an AAAA record.
+Carrying IPv6 properly needs egress on the server first; until then, dropping
+it is the protected behaviour and `configRenderer.test.ts` pins it.
+
 **The kill switch is per platform, and Windows already has one.**
 `wireguard.exe` installs WFP filters that drop untunneled traffic whenever the
 config has one peer, no `Table` key and a default route — all three are pinned

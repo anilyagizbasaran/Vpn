@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'package:vpn_client/vpn_client.dart';
 
+import 'theme.dart';
 import 'widgets/message_banner.dart';
 
 /// Two fields and a button: where the server is, and the code that lets this
@@ -75,28 +76,43 @@ class _EnrollScreenState extends State<EnrollScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(
-                      Icons.shield_outlined,
-                      size: 56,
-                      color: theme.colorScheme.primary,
+                    // Centered rather than left to the column: the parent
+                    // stretches its children, which would turn a 56x56 circle
+                    // into a full-width oval.
+                    Center(
+                      child: Container(
+                        height: 56,
+                        width: 56,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: VpnColors.accent.withValues(alpha: 0.12),
+                        ),
+                        child: const Icon(
+                          Icons.shield_outlined,
+                          size: 28,
+                          color: VpnColors.accent,
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 18),
                     Text(
                       'Set up this device',
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.headlineSmall?.copyWith(
+                      style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
                     Text(
                       'Enter your server address and the code it printed.',
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium?.copyWith(
+                      style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
+                        height: 1.4,
                       ),
                     ),
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 24),
 
                     if (enrol.error != null) ...[
                       MessageBanner(

@@ -9,6 +9,7 @@ import 'package:vpn_tunnel_mobile/vpn_tunnel_mobile.dart';
 import 'config.dart';
 import 'ui/enroll_screen.dart';
 import 'ui/home_screen.dart';
+import 'ui/theme.dart';
 import 'unsupported_tunnel.dart';
 
 /// Composition root. Everything below is wired here and nowhere else, which is
@@ -93,15 +94,8 @@ class VpnApp extends StatelessWidget {
     return MaterialApp(
       title: 'VPN',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2F6BFF)),
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2F6BFF),
-          brightness: Brightness.dark,
-        ),
-      ),
+      theme: buildTheme(Brightness.light),
+      darkTheme: buildTheme(Brightness.dark),
       home: const _AuthGate(),
     );
   }

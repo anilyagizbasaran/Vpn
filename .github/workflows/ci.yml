@@ -74,6 +74,14 @@ jobs:
           for package in vpn_crypto vpn_api vpn_tunnel_desktop; do
             (cd "packages/$package" && dart test) || exit 1
           done
+      # The app's own tests render both screens at the real window size and
+      # fail on an overflow. They matter more than usual: the Windows build
+      # cannot run on the machine this is developed on, so this is the only
+      # place a layout is ever actually laid out.
+      - name: Test the app
+        working-directory: apps/client
+        run: flutter test
+
       # A failing run has to name the tests on the summary page. Without this
       # the only signal is "exit code 1", and reading which test broke means
       # downloading the log — which needs a token the repository owner may not

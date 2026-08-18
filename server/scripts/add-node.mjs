@@ -19,7 +19,7 @@
 import { randomBytes } from 'node:crypto';
 import { createContainer } from '../dist/container.js';
 import { hashNodeToken } from '../dist/services/nodeService.js';
-import { env } from '../dist/config/env.js';
+import { env, tokenPepper } from '../dist/config/env.js';
 
 function parseArgs(argv) {
   const args = {};
@@ -108,7 +108,12 @@ try {
     token = `vpnnode_${randomBytes(32).toString('base64url')}`;
     await container.repos.servers.setAgentTokenHash(
       server.id,
-      hashNodeToken(env.JWT_REFRESH_PEPPER, token),
+      // Through tokenPepper rather than off env directly. The secret has two
+      // accepted names, and reading one of them here meant this crashed with
+      // "key must be a string, received undefined" on every server the
+      // installer set up — the installer writes the other name. It stayed
+      // hidden while older deployments still had both.
+      hashNodeToken(tokenPepper(env), token),
     );
   }
 

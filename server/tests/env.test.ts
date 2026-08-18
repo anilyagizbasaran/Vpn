@@ -174,4 +174,39 @@ describe('the pepper rename', () => {
     // reach on a machine that has one. The function is pure; test it that way.
     expect(() => tokenPepper({})).toThrow(/TOKEN_PEPPER is required/);
   });
+
+  it('is read through tokenPepper everywhere, not by either raw name', async () => {
+    // add-node.mjs read env.JWT_REFRESH_PEPPER directly, so it crashed with
+    // "key must be a string, received undefined" on every server the installer
+    // set up — the installer writes TOKEN_PEPPER. It stayed hidden because
+    // deployments predating the rename still had both names present.
+    //
+    // Scanned rather than unit-tested: the bug was a call site, and a new one
+    // would pass any test written against the function itself.
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join, sep } = await import('node:path');
+
+    const roots = ['src', 'scripts'];
+    const offenders: string[] = [];
+
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(path);
+        } else if (/\.(ts|mjs)$/.test(entry.name)) {
+          // config/env.ts is where both names are legitimately known.
+          if (path.split(sep).join('/').endsWith('src/config/env.ts')) continue;
+          const source = readFileSync(path, 'utf8');
+          if (/env\.(JWT_REFRESH_PEPPER|TOKEN_PEPPER)/.test(source)) {
+            offenders.push(path);
+          }
+        }
+      }
+    };
+
+    for (const root of roots) walk(root);
+
+    expect(offenders).toEqual([]);
+  });
 });

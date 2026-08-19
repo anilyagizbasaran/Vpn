@@ -177,9 +177,28 @@ ok "$WG_DIR/wg-nat.sh"
 
 CONF="$WG_DIR/$WG_IF.conf"
 log "interface config $CONF"
-if [[ -f "$CONF" && $FORCE_CONF -eq 0 ]]; then
+# An existing config is left alone, with one exception: if it names a key this
+# server no longer has, it is stale and must be replaced.
+#
+# That happens whenever the keypair is regenerated under a config that already
+# exists — deleting the keys to start clean, or restoring /etc/wireguard from a
+# partial backup. The failure it causes is quiet and misleading: the interface
+# comes up, `wg show` reports a healthy server, and not one client can complete
+# a handshake, because the public key everybody was given belongs to a private
+# key that is gone.
+CONF_STALE=0
+if [[ -f "$CONF" ]]; then
+  conf_key="$(sed -n 's/^PrivateKey *= *//p' "$CONF" | head -1)"
+  disk_key="$(cat "$WG_DIR/server_private.key")"
+  [[ "$conf_key" == "$disk_key" ]] || CONF_STALE=1
+fi
+
+if [[ -f "$CONF" && $FORCE_CONF -eq 0 && $CONF_STALE -eq 0 ]]; then
   skip "$CONF exists, leaving it alone (use --force to rewrite)"
 else
+  if [[ $CONF_STALE -eq 1 ]]; then
+    warn "$CONF names a key this server no longer has"       "rewriting it; clients would otherwise never complete a handshake"
+  fi
   [[ -f "$CONF" ]] && cp -a "$CONF" "$CONF.bak.$(date +%s)"
   umask 077
   cat > "$CONF" <<EOF

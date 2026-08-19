@@ -92,6 +92,8 @@ void main() {
       devices: DeviceRepository(api: api),
       store: store,
       tunnel: tunnel,
+      // The retry spacing is real time in production and pointless here.
+      settleScale: 0,
     );
     enrol = EnrollController(
       repository: EnrollmentRepository(api: api, store: store),
@@ -101,7 +103,22 @@ void main() {
     enrol.onSessionEnd = vpn.endSession;
   });
 
+  /// Lets the fire-and-forget work started by initialize() finish.
+  ///
+  /// The address lookup is deliberately not awaited in production — the first
+  /// frame must not wait on a network call. That leaves a request in flight
+  /// when a test ends, and tearDown then pulls the storage channel out from
+  /// under it, which surfaces as MissingPluginException blamed on whichever
+  /// test happened to be running next.
+  Future<void> settle() async {
+    for (var i = 0; i < 12; i++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
   tearDown(() async {
+    // Before the channel goes: see settle().
+    await settle();
     storage.uninstall();
     await tunnel.dispose();
   });
@@ -780,6 +797,170 @@ void main() {
       // prepare one with — the daemon has it.
       expect(tunnel.startedConfigs, isEmpty);
       expect(vpn.error, isNull);
+    });
+  });
+
+  group('which region is on screen', () {
+    Map<String, dynamic> whereAmI({
+      String ip = '203.0.113.9',
+      bool tunnelled = true,
+      String? region = 'Frankfurt',
+    }) => {'ip': ip, 'throughTunnel': tunnelled, 'region': region};
+
+    test('disconnected it is where the user actually is', () async {
+      await enrolled();
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      http.enqueue(
+        'GET',
+        '/whoami',
+        body: whereAmI(ip: '88.240.1.1', tunnelled: false, region: 'Türkiye'),
+      );
+
+      await vpn.initialize();
+      await settle();
+
+      // Not the node this would connect to. Naming Frankfurt here would read
+      // as protection that is not switched on.
+      expect(vpn.regionLabel, 'Türkiye');
+    });
+
+    test('connected it is the node the traffic came out of', () async {
+      await enrolled();
+      tunnel.emit(TunnelStage.connected);
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      http.enqueue('GET', '/whoami', body: whereAmI(region: 'Amsterdam'));
+
+      await vpn.initialize();
+      await settle();
+
+      // The server recognised the address it was contacted from, so this is
+      // evidence rather than a restatement of what the app already assumed.
+      expect(vpn.regionLabel, 'Amsterdam');
+    });
+
+    test('connected with no answer it falls back to the picked region',
+        () async {
+      await enrolled();
+      tunnel.emit(TunnelStage.connected);
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      http.enqueue('GET', '/whoami', body: whereAmI(region: null));
+
+      await vpn.initialize();
+      await settle();
+
+      expect(vpn.regionLabel, 'Frankfurt');
+    });
+
+    test('disconnected with no answer it shows nothing', () async {
+      await enrolled();
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      http.enqueue('GET', '/whoami', body: whereAmI(tunnelled: false, region: null));
+
+      await vpn.initialize();
+      await settle();
+
+      // A server with no location database. Blank is the honest answer; the
+      // picked region would claim the traffic goes somewhere it does not.
+      expect(vpn.regionLabel, isNull);
+    });
+
+    test('a connect during the launch lookup still updates the line', () async {
+      await enrolled();
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      // The answer for "not connected yet", which is what the launch lookup
+      // asks for.
+      http.enqueue(
+        'GET',
+        '/whoami',
+        body: whereAmI(ip: '88.240.1.1', tunnelled: false, region: 'Türkiye'),
+      );
+      // And the answer once the tunnel is up.
+      http.enqueue('GET', '/whoami', body: whereAmI(region: 'Frankfurt'));
+
+      // The tunnel has to come up *while the launch lookup is running*, which
+      // is the whole scenario. The fake otherwise answers within one event-loop
+      // turn, so held open until the stage has changed underneath it.
+      final gate = http.hold('/whoami');
+
+      final booting = vpn.initialize();
+      await settle();
+      expect(vpn.checkingAddress, isTrue, reason: 'lookup never started');
+
+      tunnel.emit(TunnelStage.connected);
+      gate.complete();
+
+      await booting;
+      await settle();
+
+      // Dropping the second lookup would leave "Türkiye" on screen for the
+      // rest of the session, next to a tunnel that is up.
+      expect(vpn.regionLabel, 'Frankfurt');
+      expect(vpn.publicAddress?.throughTunnel, isTrue);
+    });
+
+    test('an answer from before the routes were up is not the final word',
+        () async {
+      await enrolled();
+      tunnel.emit(TunnelStage.connected);
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      // The interface reports "up" before its routes exist, so the first
+      // lookup after a connect can still leave by the old path and come back
+      // with the address the user had a second ago.
+      http.enqueue(
+        'GET',
+        '/whoami',
+        body: whereAmI(ip: '88.240.1.1', tunnelled: false, region: 'Türkiye'),
+      );
+      http.enqueue('GET', '/whoami', body: whereAmI(region: 'Frankfurt'));
+
+      await vpn.initialize();
+      await settle();
+
+      // Taking the first answer would leave the line reading "unprotected,
+      // Türkiye" for the rest of the session, over a tunnel that is fine.
+      expect(vpn.publicAddress?.throughTunnel, isTrue);
+      expect(vpn.regionLabel, 'Frankfurt');
+      expect(http.callCount('GET', '/whoami'), 2);
+    });
+
+    test('it stops asking rather than insisting the tunnel is up', () async {
+      await enrolled();
+      tunnel.emit(TunnelStage.connected);
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      // Every answer says the traffic is not tunnelled. That may be the truth
+      // — a tunnel that is up and carrying nothing — and it must be shown as
+      // such rather than retried forever.
+      for (var i = 0; i < 8; i++) {
+        http.enqueue(
+          'GET',
+          '/whoami',
+          body: whereAmI(ip: '88.240.1.1', tunnelled: false, region: 'Türkiye'),
+        );
+      }
+
+      await vpn.initialize();
+      await settle();
+
+      expect(vpn.publicAddress?.throughTunnel, isFalse);
+      expect(http.callCount('GET', '/whoami'), lessThanOrEqualTo(4));
+    });
+
+    test('the region list is retried after a failure at launch', () async {
+      await enrolled();
+      // Offline at launch: no /servers stub, so the first attempt 500s.
+      http.enqueue('GET', '/whoami', body: whereAmI(tunnelled: false, region: null));
+
+      await vpn.initialize();
+      await settle();
+      expect(vpn.servers, isEmpty);
+
+      // Back online. Without the retry this stays empty for the whole session
+      // and the region picker has nothing in it.
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      http.enqueue('GET', '/whoami', body: whereAmI(tunnelled: false, region: null));
+      await vpn.refreshPublicAddress();
+
+      expect(vpn.servers, hasLength(1));
     });
   });
 }

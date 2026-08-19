@@ -2,6 +2,7 @@ import type { Repositories } from '../db/repositories.js';
 import type { Device, Peer, VpnServer } from '../db/types.js';
 import { UniqueConstraintError } from '../db/types.js';
 import { decryptSecret, encryptSecret } from '../utils/crypto.js';
+import { type GeoLookup, noGeoLookup } from './geoip.js';
 import { logger } from '../utils/logger.js';
 import {
   badRequest,
@@ -94,6 +95,9 @@ export class DeviceService {
   constructor(
     private readonly repos: Repositories,
     private readonly config: DeviceServiceConfig,
+    /** Defaults to knowing nothing, which is what a build without the
+     * database has. Only [whereFrom] uses it. */
+    private readonly geo: GeoLookup = noGeoLookup,
   ) {}
 
   private isOnline(server: VpnServer, now = Date.now()): boolean {
@@ -149,7 +153,12 @@ export class DeviceService {
       return { ip: host, throughTunnel: true, region: server.displayName };
     }
 
-    return { ip: seen, throughTunnel: false, region: null };
+    // Not tunnelled, so this is the user's own address and the honest answer
+    // to "where am I" is where they actually are. Resolved against a database
+    // in this image: with the tunnel down, handing that address to a
+    // geolocation API would leak the one fact the tunnel exists to hide, at
+    // the moment it is least protected.
+    return { ip: seen, throughTunnel: false, region: this.geo.countryOf(seen) };
   }
 
   /** The region list the app shows. Draining nodes are hidden from new picks. */

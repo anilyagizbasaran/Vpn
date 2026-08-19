@@ -107,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
               _ConnectionCard(
                 serverAddress: context.watch<VpnServerAddress>().current,
-                region: vpn.selectedServer?.displayName,
+                region: vpn.regionLabel,
                 publicAddress: vpn.publicAddress,
                 checking: vpn.checkingAddress,
                 connected: vpn.isConnected,

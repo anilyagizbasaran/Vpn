@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Container } from '../src/container.js';
 import { PRIVATE_KEY_PLACEHOLDER } from '../src/services/configRenderer.js';
+import { DeviceService } from '../src/services/deviceService.js';
+import { noGeoLookup } from '../src/services/geoip.js';
 import {
   addNode,
   auth,
@@ -16,6 +18,15 @@ import {
 let app: Express;
 let container: Container;
 let fra: TestNode;
+
+/// Matches what the harness wires up; only whereFrom is exercised with it.
+const deviceConfig = {
+  enablePresharedKey: false,
+  pskEncryptionKey: '',
+  clientAllowedIps: '0.0.0.0/0,::/0',
+  persistentKeepalive: 25,
+  clientMtu: 1420,
+};
 
 beforeEach(async () => {
   ({ app, container } = await createHarness());
@@ -199,6 +210,41 @@ describe('operational endpoints', () => {
 
     it('is behind the device token', async () => {
       await request(app).get('/whoami').expect(401);
+    });
+
+    it('names the country only for an address outside the tunnel', async () => {
+      // The app shows "where you are" while the tunnel is down and "where you
+      // come out" while it is up. Both answers come from here.
+      const asked: string[] = [];
+      const geo = {
+        countryOf: (ip: string) => {
+          asked.push(ip);
+          return 'Testland';
+        },
+      };
+      const devices = new DeviceService(container.repos, deviceConfig, geo);
+
+      const direct = await devices.whereFrom('203.0.113.9');
+      expect(direct).toEqual({
+        ip: '203.0.113.9',
+        throughTunnel: false,
+        region: 'Testland',
+      });
+
+      const tunnelled = await devices.whereFrom('10.8.0.7');
+      expect(tunnelled.throughTunnel).toBe(true);
+      // The node's own name, not a lookup of the node's address — and the
+      // database is never consulted for it.
+      expect(tunnelled.region).not.toBe('Testland');
+      expect(asked).toEqual(['203.0.113.9']);
+    });
+
+    it('shows no location when there is no database', async () => {
+      // A build without the file has to keep working; the region line just
+      // stays empty rather than the service refusing to answer.
+      const devices = new DeviceService(container.repos, deviceConfig, noGeoLookup);
+
+      expect((await devices.whereFrom('203.0.113.9')).region).toBeNull();
     });
   });
 });

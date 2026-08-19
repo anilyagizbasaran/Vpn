@@ -19,10 +19,13 @@ class VpnController extends ChangeNotifier {
     required DeviceStore store,
     required Tunnel tunnel,
     Duration keyRotationInterval = const Duration(days: 7),
+    // Scales the waits above. Tests set it to zero; nothing else changes it.
+    double settleScale = 1,
   }) : _devices = devices,
        _store = store,
        _tunnel = tunnel,
-       _keyRotationInterval = keyRotationInterval;
+       _keyRotationInterval = keyRotationInterval,
+       _settleScale = settleScale;
 
   final DeviceRepository _devices;
   final DeviceStore _store;
@@ -32,11 +35,31 @@ class VpnController extends ChangeNotifier {
   /// Rotation is what makes a leaked config expire on its own.
   final Duration _keyRotationInterval;
 
+  final double _settleScale;
+
   StreamSubscription<TunnelStage>? _stageSubscription;
 
   TunnelStage _stage = TunnelStage.disconnected;
   PublicAddress? _publicAddress;
   bool _checkingAddress = false;
+
+  /// Set when the tunnel changed state while a lookup was already running, so
+  /// the answer that is on its way is known to be about the old state.
+  bool _refreshAgain = false;
+
+  /// How many times the answer has been rejected as "too early" since the last
+  /// settled one.
+  int _settleAttempt = 0;
+
+  /// Spaced out rather than a single long wait: the routes are usually there
+  /// within a few hundred milliseconds, and the later tries only exist for a
+  /// machine that is slower than that.
+  static const _settleDelays = [
+    Duration(milliseconds: 400),
+    Duration(milliseconds: 900),
+    Duration(seconds: 2),
+  ];
+
   VpnAction _action = VpnAction.idle;
   String? _error;
   Device? _device;
@@ -70,6 +93,32 @@ class VpnController extends ChangeNotifier {
     );
     if (matches.isNotEmpty) return matches.first;
     return _servers.isEmpty ? null : _servers.first;
+  }
+
+  /// Where this device appears to be, as the line beside the address.
+  ///
+  /// It changes meaning with the tunnel, and that is the point: connected it
+  /// is the node the traffic came out of, disconnected it is the country the
+  /// user is actually in. Read together with the address above it, the pair
+  /// says either "you are covered, and here is where you look like you are" or
+  /// "you are not, and here is where you really are".
+  ///
+  /// Both answers come from the server, which sees the address the request
+  /// arrived from and resolves it locally. Nothing is asked of anyone else.
+  String? get regionLabel {
+    // Whatever the server says, tunnelled or not. Connected it names the node
+    // the traffic came out of; disconnected it names the country the request
+    // came from, which is the user's own — and that is the pairing that makes
+    // the line worth reading. Showing the node's region while disconnected
+    // would claim protection that is not there.
+    final region = _publicAddress?.region;
+    if (region != null && region.isNotEmpty) return region;
+
+    // Nothing heard back yet, or no location database on the server. Falling
+    // back to the picked region is only honest while connected: otherwise it
+    // would name a place the traffic is not going through.
+    if (isConnected) return selectedServer?.displayName;
+    return null;
   }
 
   bool get isConnected => _stage == TunnelStage.connected;
@@ -129,7 +178,15 @@ class VpnController extends ChangeNotifier {
   /// is a line of information, and a VPN that pops an error because it could
   /// not display one would be worse than one that shows nothing.
   Future<void> refreshPublicAddress() async {
-    if (_checkingAddress) return;
+    // A refresh that arrives mid-flight is remembered, not dropped. The
+    // launch refresh is often still waiting when the user presses Connect, and
+    // returning here left the pre-connect answer on screen for the whole
+    // session: the address and region kept saying where the user was before
+    // they connected, which is the one moment the line must not be stale.
+    if (_checkingAddress) {
+      _refreshAgain = true;
+      return;
+    }
     _checkingAddress = true;
     notifyListeners();
 
@@ -140,6 +197,51 @@ class VpnController extends ChangeNotifier {
     } finally {
       _checkingAddress = false;
       notifyListeners();
+    }
+
+    // A second chance at the region list. The first attempt runs at launch,
+    // which on a machine that was offline then leaves the region blank for the
+    // rest of the session — including before the first connect, which is
+    // exactly when someone looks at it to see where they are about to come out.
+    await _ensureServers();
+
+    if (_refreshAgain) {
+      _refreshAgain = false;
+      await refreshPublicAddress();
+      return;
+    }
+
+    // Connected, yet the server saw the request arrive from outside the
+    // tunnel. The interface reports "up" before its routes are in place, so a
+    // lookup fired the instant a connect completes can still leave by the old
+    // path — and the answer is then the address the user had a second ago.
+    //
+    // Left alone it sticks: nothing else asks again, so the line reads as
+    // unprotected for the rest of the session while the tunnel is fine. A few
+    // spaced retries cover the gap; after that the answer is taken at face
+    // value, because a tunnel that really is not carrying traffic must not be
+    // painted as if it were.
+    if (isConnected &&
+        _publicAddress?.throughTunnel == false &&
+        _settleAttempt < _settleDelays.length) {
+      final wait = _settleDelays[_settleAttempt];
+      _settleAttempt += 1;
+      await Future<void>.delayed(wait * _settleScale);
+      await refreshPublicAddress();
+      return;
+    }
+
+    _settleAttempt = 0;
+  }
+
+  /// Loads the region list if an earlier attempt came back empty.
+  Future<void> _ensureServers() async {
+    if (_servers.isNotEmpty) return;
+    try {
+      _servers = await _devices.servers();
+      if (_servers.isNotEmpty) notifyListeners();
+    } on ApiException {
+      // Still unreachable. The address line beside it already says so.
     }
   }
 

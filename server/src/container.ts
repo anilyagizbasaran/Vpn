@@ -4,6 +4,7 @@ import { openDatabase, type Db } from './db/sqlite.js';
 import { createSqliteRepositories } from './db/sqliteRepositories.js';
 import { InviteService } from './services/inviteService.js';
 import { DeviceService } from './services/deviceService.js';
+import { openGeoLookup } from './services/geoip.js';
 import { NodeService } from './services/nodeService.js';
 import { logger } from './utils/logger.js';
 
@@ -29,13 +30,22 @@ export async function createContainer(options: ContainerOptions = {}): Promise<C
 
   const pepper = tokenPepper(env);
 
-  const devices = new DeviceService(repos, {
-    enablePresharedKey: env.WG_ENABLE_PRESHARED_KEY,
-    pskEncryptionKey: env.PSK_ENCRYPTION_KEY,
-    clientAllowedIps: env.WG_CLIENT_ALLOWED_IPS,
-    persistentKeepalive: env.WG_PERSISTENT_KEEPALIVE,
-    clientMtu: env.WG_CLIENT_MTU,
-  });
+  // Absent in a build without the database, and the app then simply shows no
+  // location. Loaded once here rather than per request: it is a memory-mapped
+  // file and reopening it on every /whoami would be the expensive part.
+  const geo = await openGeoLookup(env.GEOIP_DATABASE_PATH);
+
+  const devices = new DeviceService(
+    repos,
+    {
+      enablePresharedKey: env.WG_ENABLE_PRESHARED_KEY,
+      pskEncryptionKey: env.PSK_ENCRYPTION_KEY,
+      clientAllowedIps: env.WG_CLIENT_ALLOWED_IPS,
+      persistentKeepalive: env.WG_PERSISTENT_KEEPALIVE,
+      clientMtu: env.WG_CLIENT_MTU,
+    },
+    geo,
+  );
 
   const nodes = new NodeService(repos, {
     tokenPepper: pepper,

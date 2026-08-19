@@ -36,6 +36,16 @@ const envSchema = z.object({
   DATABASE_PATH: z.string().min(1).default('./data/vpn.db'),
 
   /**
+   * IP-to-country database, used to answer "where am I" while the tunnel is
+   * down. Empty or missing simply means no location is shown.
+   *
+   * Local on purpose: with the tunnel down the address being looked up is the
+   * user's real one, and sending it to a geolocation API would disclose
+   * exactly what the tunnel exists to hide.
+   */
+  GEOIP_DATABASE_PATH: z.string().default('./data/geoip-country.mmdb'),
+
+  /**
    * HMAC key for every credential the server stores hashed: invite codes,
    * device tokens, node agent tokens. Losing it invalidates all of them at
    * once, which is a mass logout rather than a breach.

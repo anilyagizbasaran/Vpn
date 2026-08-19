@@ -36,6 +36,24 @@ RUN npm run build
 RUN rm -rf node_modules && npm ci --omit=dev
 
 
+# --- geoip -------------------------------------------------------------------
+# The IP-to-country database that answers "where am I" while the tunnel is
+# down. Baked in so the running service never reaches out for it: the address
+# being looked up is the user's real one, and asking anybody else would
+# disclose exactly what the tunnel exists to hide.
+#
+# DB-IP Lite, CC BY 4.0 (https://db-ip.com). Published monthly; the previous
+# month is tried too, because the current one does not exist on the 1st.
+#
+# A failure here is not a build failure. Without the file the service still
+# runs and simply shows no location — which is a better outcome than an image
+# that cannot be built because a third party moved a URL.
+FROM node:24-bookworm-slim AS geoip
+RUN apt-get update  && apt-get install -y --no-install-recommends curl ca-certificates  && rm -rf /var/lib/apt/lists/*
+WORKDIR /geo
+RUN set -eu;     base="https://download.db-ip.com/free";     for month in "$(date -u +%Y-%m)" "$(date -u -d '1 month ago' +%Y-%m)"; do       if curl -fsSL --max-time 120 "$base/dbip-country-lite-$month.mmdb.gz" -o db.gz; then         gunzip -c db.gz > geoip-country.mmdb && rm db.gz && break;       fi;     done;     if [ -s geoip-country.mmdb ]; then       echo "geoip database: $(wc -c < geoip-country.mmdb) bytes";     else       echo "geoip database unavailable; location will not be shown";       : > geoip-country.mmdb;     fi
+
+
 # --- runtime -----------------------------------------------------------------
 FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
@@ -55,6 +73,11 @@ COPY scripts ./scripts
 # Docker seeds a new named volume from the image path, ownership included.
 # A bind mount gets no such treatment — chown it to uid 1000 on the host first,
 # or the first write fails with SQLITE_CANTOPEN.
+# Beside dist rather than in /data: it is part of the image, not state, and a
+# named volume mounted over /data would otherwise hide it.
+COPY --from=geoip /geo/geoip-country.mmdb ./data/geoip-country.mmdb
+ENV GEOIP_DATABASE_PATH=/app/data/geoip-country.mmdb
+
 RUN mkdir -p /data && chown node:node /data
 VOLUME /data
 

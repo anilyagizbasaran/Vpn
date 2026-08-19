@@ -26,8 +26,18 @@ class RecordedRequest {
 class FakeHttpClient extends http.BaseClient {
   final List<RecordedRequest> requests = [];
   final Map<String, List<http.Response>> _queued = {};
+  final Map<String, Completer<void>> _held = {};
 
   Object? failWith;
+
+  /// Holds every response for [path] until the returned completer is done.
+  ///
+  /// Needed to test what happens *during* a request. Without it the fake
+  /// answers within the same event-loop turn, so a test can never observe the
+  /// in-flight state it is trying to reason about, and polling for it reads
+  /// as "it never started".
+  Completer<void> hold(String path) =>
+      _held[path] ??= Completer<void>();
 
   void enqueue(
     String method,
@@ -62,6 +72,9 @@ class FakeHttpClient extends http.BaseClient {
     );
 
     if (failWith != null) throw failWith!;
+
+    final gate = _held[request.url.path];
+    if (gate != null) await gate.future;
 
     final key = '${request.method} ${request.url.path}';
     final queue = _queued[key];

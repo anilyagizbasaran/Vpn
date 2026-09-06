@@ -210,6 +210,32 @@ ok "wrote /etc/ipsec.secrets"
 # which this script deliberately turns off. Copies stay inside the profile.
 #
 # The renewal hook below re-copies, so this does not go stale.
+# strongSwan keeps two independent log levels, and charondebug only sets one.
+#
+# The syslog logger has its own default, and at that default charon writes
+# "<address> is initiating an IKE_SA" for every attempt — including from the
+# bots that scan port 500 all day. That is a record of who connected and when,
+# in a place nobody thinks to look, on a server whose database is deliberately
+# stripped of exactly that. Setting charondebug alone does not silence it;
+# this file does. Verified by running a real IKE handshake against the server
+# and confirming the log did not grow.
+log "silencing the IKE daemon's own log"
+cat > /etc/strongswan.d/99-vpn-silence.conf <<'SILENCE'
+charon {
+    syslog {
+        identifier = charon
+        daemon {
+            default = -1
+        }
+        auth {
+            default = -1
+        }
+    }
+}
+SILENCE
+chmod 644 /etc/strongswan.d/99-vpn-silence.conf
+ok "no connection is written to the log"
+
 log "certificate files"
 install -d -m 755 /etc/ipsec.d/certs /etc/ipsec.d/cacerts
 install -d -m 700 /etc/ipsec.d/private

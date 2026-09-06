@@ -187,26 +187,47 @@ EOF
 chmod 600 /etc/ipsec.secrets
 ok "wrote /etc/ipsec.secrets"
 
-# strongSwan reads certificates from its own directories. Symlinked rather
-# than copied so a certbot renewal is picked up without this script running
-# again — only a reload is needed, which the deploy hook below does.
-log "certificate links"
+# Copied into strongSwan's own directories, not symlinked.
+#
+# A symlink is the obvious choice and it does not work: AppArmor confines
+# charon to a small set of paths, and it evaluates the *resolved* path. A link
+# from /etc/ipsec.d/private into /etc/letsencrypt/archive is denied, charon
+# loads no key, and the only symptom a user sees is that every phone fails
+# authentication — the log says "Permission denied" but only at raised debug,
+# which this script deliberately turns off. Copies stay inside the profile.
+#
+# The renewal hook below re-copies, so this does not go stale.
+log "certificate files"
 install -d -m 755 /etc/ipsec.d/certs /etc/ipsec.d/cacerts
 install -d -m 700 /etc/ipsec.d/private
-ln -sf "$LIVE/fullchain.pem" /etc/ipsec.d/certs/fullchain.pem
-ln -sf "$LIVE/chain.pem"     /etc/ipsec.d/cacerts/chain.pem
-ln -sf "$LIVE/privkey.pem"   /etc/ipsec.d/private/privkey.pem
-ok "linked into /etc/ipsec.d"
+rm -f /etc/ipsec.d/certs/fullchain.pem /etc/ipsec.d/cacerts/chain.pem       /etc/ipsec.d/private/privkey.pem
+install -m 644 "$LIVE/fullchain.pem" /etc/ipsec.d/certs/fullchain.pem
+install -m 644 "$LIVE/chain.pem"     /etc/ipsec.d/cacerts/chain.pem
+install -m 600 "$LIVE/privkey.pem"   /etc/ipsec.d/private/privkey.pem
+ok "copied into /etc/ipsec.d"
 
-cat > /etc/letsencrypt/renewal-hooks/deploy/10-reload-strongswan.sh <<'HOOK'
+cat > /etc/letsencrypt/renewal-hooks/deploy/10-reload-strongswan.sh <<HOOK
 #!/bin/sh
-# strongSwan reads the certificate once at start. Without this, a renewal
-# lands on disk and phones keep being shown the expired one until something
-# restarts the service — which, on a machine left alone, is nothing.
+# Copies the renewed certificate into strongSwan's own directories and reloads.
+#
+# Both halves are needed. The copy, because AppArmor will not let charon read
+# /etc/letsencrypt at all — see setup-ikev2.sh. The reload, because charon
+# reads the certificate once at start, so without it a renewal lands on disk
+# and phones keep being offered the old one until something restarts the
+# service, which on a machine left alone is nothing. The failure arrives about
+# ninety days later as "every phone stopped connecting".
 set -e
 command -v ipsec >/dev/null 2>&1 || exit 0
-ipsec reload >/dev/null 2>&1 || true
+
+LIVE="$LIVE"
+[ -s "\$LIVE/privkey.pem" ] || exit 0
+
+install -m 644 "\$LIVE/fullchain.pem" /etc/ipsec.d/certs/fullchain.pem
+install -m 644 "\$LIVE/chain.pem"     /etc/ipsec.d/cacerts/chain.pem
+install -m 600 "\$LIVE/privkey.pem"   /etc/ipsec.d/private/privkey.pem
+
 ipsec rereadall >/dev/null 2>&1 || true
+ipsec reload >/dev/null 2>&1 || true
 HOOK
 chmod 755 /etc/letsencrypt/renewal-hooks/deploy/10-reload-strongswan.sh
 ok "renewal hook installed"

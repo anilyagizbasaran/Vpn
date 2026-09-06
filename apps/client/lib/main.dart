@@ -4,7 +4,6 @@ import 'package:vpn_api/vpn_api.dart';
 import 'package:vpn_client/vpn_client.dart';
 import 'package:vpn_tunnel/vpn_tunnel.dart';
 import 'package:vpn_tunnel_desktop/vpn_tunnel_desktop.dart';
-import 'package:vpn_tunnel_mobile/vpn_tunnel_mobile.dart';
 
 import 'config.dart';
 import 'ui/enroll_screen.dart';
@@ -37,15 +36,12 @@ Future<void> main() async {
 
   // The one line that differs between platforms. Everything above the tunnel
   // contract — controllers, storage, rotation policy, UI — is identical.
+  //
+  // No mobile branch any more, on purpose: phones connect over IKEv2 from
+  // their own Settings screen and never run this app.
   final Tunnel tunnel;
   MachineEnrolment? machine;
-  if (AppConfig.hasMobileTunnel) {
-    tunnel = MobileTunnel(
-      interfaceName: AppConfig.interfaceName,
-      vpnName: AppConfig.vpnName,
-      providerBundleIdentifier: AppConfig.providerBundleIdentifier,
-    );
-  } else if (AppConfig.hasDesktopTunnel) {
+  if (AppConfig.hasDesktopTunnel) {
     tunnel = DesktopTunnel();
     // The daemon owns this computer's identity, so the app and the browser
     // extension are one device rather than two — whichever set it up first.
@@ -85,9 +81,6 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: enrol),
         ChangeNotifierProvider.value(value: vpn),
         ChangeNotifierProvider.value(value: serverAddress),
-        Provider.value(
-          value: SystemSettings(isSupported: AppConfig.hasSystemVpnSettings),
-        ),
       ],
       child: const VpnApp(),
     ),

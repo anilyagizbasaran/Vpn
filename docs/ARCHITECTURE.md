@@ -11,7 +11,7 @@ Compromising any one component should not be enough.
 |---|---|---|
 | Control plane (`server/`) | Hashed invite and device tokens, **public keys** | Private keys. It never touches WireGuard |
 | Node agent (`vpn-node-agent`) | How to change the interface | Any token, or another node's peers |
-| Client (`apps/client`) | Its device token; on mobile also **the private key** | On desktop it never sees a private key — the daemon holds it |
+| Client (`apps/client`) | Its device token | It never sees a private key — the daemon holds it |
 | Desktop service (`vpnd`) | How to bring a tunnel up, and — on desktop — the device token and **the private key** | Anything but the one control plane it was pointed at |
 | Extension (`extension/`) | Whether the tunnel is up | It cannot see or produce a config |
 
@@ -68,7 +68,6 @@ L4  apps/client        extension/                  ← neither knows the other
     ────────────────────────────────────────────
 L3  vpn_client    enrolment · device identity · rotation · region selection
 L2  vpn_tunnel    the tunnel contract (pure Dart)
-      ├─ vpn_tunnel_mobile    wireguard_flutter_plus
       └─ vpn_tunnel_desktop   vpnd IPC client
 L1  vpn_api       HTTP + models       (no Flutter, no dart:io)
 L0  vpn_crypto    X25519              (one dependency: package:cryptography)

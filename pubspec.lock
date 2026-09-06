@@ -488,14 +488,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.2"
-  process_run:
-    dependency: transitive
-    description:
-      name: process_run
-      sha256: e0e24c11a49445c449911daef46cf28d68e80a5e33daafbfbc6d6819a1f83519
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.3.3+1"
   provider:
     dependency: transitive
     description:
@@ -605,14 +597,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.1"
-  synchronized:
-    dependency: transitive
-    description:
-      name: synchronized
-      sha256: "63896c27e81b28f8cb4e69ead0d3e8f03f1d1e5fc531a3e579cabed6a2c7c9e5"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.4.0+1"
   term_glyph:
     dependency: transitive
     description:
@@ -717,14 +701,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.15.0"
-  wireguard_flutter_plus:
-    dependency: transitive
-    description:
-      name: wireguard_flutter_plus
-      sha256: "6a561135efdd8b9f1b62b6aa1957e53eb7bc4603dad2a13be00d7d1c592c9e0c"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.0.7"
   xdg_directories:
     dependency: transitive
     description:

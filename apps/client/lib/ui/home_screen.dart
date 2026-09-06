@@ -4,8 +4,6 @@ import 'package:vpn_api/vpn_api.dart';
 import 'package:vpn_client/vpn_client.dart';
 import 'package:vpn_tunnel/vpn_tunnel.dart';
 
-import '../config.dart';
-import 'kill_switch_screen.dart';
 import 'theme.dart';
 import 'widgets/message_banner.dart';
 
@@ -126,22 +124,9 @@ class _HomeScreenState extends State<HomeScreen> {
       tooltip: 'More',
       position: PopupMenuPosition.under,
       onSelected: (value) {
-        if (value == 'killswitch') {
-          Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const KillSwitchScreen()),
-          );
-        }
         if (value == 'remove') _confirmRemoveDevice();
       },
       itemBuilder: (_) => [
-        // Only Android exposes a system always-on VPN screen to send the user
-        // to; offering it elsewhere would be a dead end.
-        if (AppConfig.hasSystemVpnSettings)
-          const PopupMenuItem(
-            value: 'killswitch',
-            height: 40,
-            child: Text('Kill switch'),
-          ),
         PopupMenuItem(
           value: 'remove',
           height: 40,

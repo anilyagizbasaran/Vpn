@@ -5,7 +5,6 @@
 // produces it.
 
 const PLATFORMS = [
-  { key: 'android', name: 'Android', hint: 'APK, 7.0 ve üzeri' },
   { key: 'windows', name: 'Windows', hint: '10 ve üzeri, 64-bit' },
   { key: 'macos', name: 'macOS', hint: '12 ve üzeri' },
   { key: 'linux', name: 'Linux', hint: 'x86-64 · wireguard-tools gerekir' },
@@ -16,8 +15,9 @@ const grid = document.getElementById('download-grid');
 /** Best guess at which card to highlight, from the user agent. */
 function guessPlatform() {
   const ua = navigator.userAgent;
-  if (/Android/i.test(ua)) return 'android';
-  if (/iPhone|iPad/i.test(ua)) return 'ios';
+  // Phones have no download: they connect over IKEv2 from their own
+  // Settings screen, which the page explains instead of offering a file.
+  if (/Android|iPhone|iPad/i.test(ua)) return null;
   if (/Mac/i.test(ua)) return 'macos';
   if (/Linux/i.test(ua)) return 'linux';
   if (/Win/i.test(ua)) return 'windows';

@@ -117,11 +117,10 @@ packages/          Shared Dart layers (90 tests)
   vpn_crypto/          L0  X25519, one dependency: package:cryptography
   vpn_api/             L1  HTTP + models (no Flutter, no dart:io)
   vpn_tunnel/          L2  platform-agnostic tunnel contract
-  vpn_tunnel_mobile/   L2  Android / iOS
   vpn_tunnel_desktop/  L2  vpnd IPC client
   vpn_client/          L3  controllers, storage, rotation policy
 apps/
-  client/          L4  Flutter app — Android, iOS, Windows, macOS, Linux
+  client/          L4  Flutter app — Windows, macOS, Linux
 extension/         Companion browser extension (MV3)
 website/           Download page
 docs/              ARCHITECTURE.md · GO-LIVE.md · TUNING.md
@@ -155,7 +154,6 @@ Flutter side — one `pub get` at the workspace root resolves everything:
 ```bash
 dart pub get
 cd apps/client
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:3000   # Android emulator
 ```
 
 Desktop also needs the daemon, which can run without configuring a real tunnel:
@@ -344,7 +342,7 @@ for a 429 never gets to parse 32 KB of JSON first.
 |---|---|---|
 | Control plane | Done | 128 tests; acceptance suite green against a live server |
 | Dart layers | Done | 90 tests, `dart analyze` clean |
-| Mobile app | Done | `flutter build apk --release` — 58 MB |
+| Phones | Done | native IKEv2 via `setup-ikev2.sh` — nothing to install |
 | Desktop daemon | Done | **Real tunnel, end to end**; Windows service start is broken (below) |
 | Desktop GUI | Code done | Build unverified — needs the Visual Studio C++ workload |
 | Browser extension | Done | Native host verified against a real daemon; toggles a live tunnel |
@@ -370,11 +368,10 @@ running it as a console process, not yet by a full install-and-start cycle.
 2. **Email verification** — choosing an SMTP provider is a product decision, and
    half a flow is worse than none.
 3. **Payment and subscriptions** — everyone who registers gets five devices.
-4. **iOS Network Extension** — needs an entitlement application, which takes
-   weeks. Apply early.
-5. **Desktop kill switch** — the daemon can write firewall rules but does not.
-   Android uses the OS's built-in one.
-6. **Region picker UI** — `VpnController.selectServer()` is ready and has no
+4. **Mobile apps** — removed deliberately. Phones connect over IKEv2 from
+   their own Settings screen: nothing to install, nothing to distribute, and
+   the client is maintained by Apple and Google rather than here.
+5. **Region picker UI** — `VpnController.selectServer()` is ready and has no
    button. It arrives when a second node does.
 
 ## Documentation

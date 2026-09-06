@@ -64,38 +64,6 @@ jobs:
           name: vpnd-${{ matrix.target }}
           path: vpnd/vpnd-${{ matrix.target }}.tar.gz
 
-  android:
-    name: Android APK
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: '17' }
-      - uses: subosito/flutter-action@v2
-        with: { channel: stable, cache: true }
-      - run: dart pub get
-      # No --dart-define=API_BASE_URL. Everyone who runs this has their own
-      # server, so a release with an address compiled in would ship pointing at
-      # somebody else's; the app asks on first launch instead.
-      - name: Build
-        working-directory: apps/client
-        shell: bash
-        run: |
-          set +e
-          flutter build apk --release > build.log 2>&1
-          status=$?
-          set -e
-          cat build.log
-          if [ "$status" -ne 0 ]; then
-            details=$(grep -iE "error|failed|exception" build.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::error title=Android build failed::${details}"
-          fi
-          exit "$status"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-apk
-          path: apps/client/build/app/outputs/flutter-apk/app-release.apk
-
   desktop:
     name: Desktop GUI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -178,7 +146,7 @@ jobs:
 
   publish:
     name: Draft the release
-    needs: [daemon, android, desktop]
+    needs: [daemon, desktop]
     runs-on: ubuntu-latest
     # Drafts with whatever built. A platform that failed simply has no asset,
     # which is better than withholding the three that worked — the draft is

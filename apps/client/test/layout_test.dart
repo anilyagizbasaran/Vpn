@@ -116,7 +116,6 @@ Widget _wrap(Widget child, {required Brightness brightness}) {
           buildDefault: 'https://vpn.example.com',
         ),
       ),
-      Provider.value(value: SystemSettings(isSupported: false)),
     ],
     child: MaterialApp(
       debugShowCheckedModeBanner: false,

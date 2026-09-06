@@ -15,7 +15,6 @@ workspace:
   - packages/vpn_crypto          # L0  pure Dart, no dependencies
   - packages/vpn_api             # L1  pure Dart, HTTP + models
   - packages/vpn_tunnel          # L2  platform-agnostic tunnel contract
-  - packages/vpn_tunnel_mobile   # L2  Android/iOS implementation
   - packages/vpn_tunnel_desktop  # L2  Windows/macOS/Linux, via the vpnd daemon
   - packages/vpn_client          # L3  controllers, storage, policy
   - apps/client                  # L4  the shipped application

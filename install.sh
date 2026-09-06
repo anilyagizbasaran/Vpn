@@ -451,6 +451,9 @@ ${BOLD}Your VPN server is running.${RESET}
       ${BOLD}vpn reset --kick${RESET}    new code and remove every device
       ${BOLD}vpn update${RESET}          pull the latest version, roll back if it fails
 
+  Phones connect from their own Settings, no app needed. Set that up with:
+      ${BOLD}sudo $INSTALL_DIR/server/scripts/setup-ikev2.sh --domain $DOMAIN${RESET}
+
   Installed at:   $INSTALL_DIR
   Update later:   ${BOLD}vpn update${RESET}
 

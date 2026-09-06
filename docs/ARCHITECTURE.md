@@ -135,7 +135,7 @@ trip. It is Mullvad's model.
                and applies it in a single `wg set`
 
 3. TUNNEL      The client substitutes its own key for the placeholder
-               mobile:   straight to VpnService / NetworkExtension
+               phones:   not this path at all — native IKEv2, below
                desktop:  handed to vpnd over an AF_UNIX socket
 
 4. ROTATION    If the key is older than 7 days, POST /device/rotate
@@ -237,6 +237,33 @@ a machine with no network and nothing on screen to explain it.
 daemon, and a node whose liveness is unknown reports `online: false`. Saying
 "off" while unprotected is correct; saying "off" while unknown is misleading.
 
+## Phones: IKEv2 from the Settings screen
+
+No phone can dial WireGuard from its own Settings, and shipping an app costs a
+store account, a yearly fee and — on iOS — an entitlement application. So
+phones take a different door: `server/scripts/setup-ikev2.sh` puts strongSwan
+beside WireGuard, and a phone connects natively with a server name, a username
+and a password typed into its own VPN settings. Nothing is installed.
+
+The identity model is the same one the invite code uses: one shared secret for
+every phone, so the server cannot tell phones apart and has nothing per-person
+to hand over. `charondebug` is zeroed for the same reason the access logs are —
+the database keeps no connection history, and the IKE daemon must not quietly
+keep one instead. The phone verifies the server against the same Let's Encrypt
+certificate a browser would, so there is no CA profile to install, and a
+certbot deploy hook reloads strongSwan on renewal so the certificate on port
+4500 cannot silently age out of step with the one on 443.
+
+One sharp edge, learned the slow way: `ipsec.secrets` must name the server
+key's actual type, and Let's Encrypt issues ECDSA by default now. Name it RSA
+and strongSwan loads no key at all — the handshake runs right up to
+authentication and every phone gets a useless AUTH_FAILED. The setup script
+detects the type from the key itself.
+
+WireGuard remains the protocol everywhere else; IKEv2 exists only because it
+is the one protocol phones speak natively. The two share nothing but the
+machine: separate address pools, separate credentials, separate daemons.
+
 ## Test strategy
 
 We test the real paths, not mocked copies of them:
@@ -265,10 +292,9 @@ API → database → agent → `wg` chain.
 2. **Email verification** — choosing an SMTP provider is a product decision, and
    half a flow is worse than none.
 3. **Payment and subscriptions** — everyone who registers gets five devices.
-4. **iOS Network Extension** — needs an entitlement application, which takes
-   weeks. Apply early.
-5. **A desktop kill switch** — the daemon can write firewall rules but does not.
-   Android uses the OS's built-in one. The browser extension has its own, which
-   only covers the browser.
+4. **Mobile apps** — removed deliberately. Phones connect over IKEv2 from
+   their own Settings screen (see below), which costs nothing to distribute,
+   needs no store account or entitlement, and is maintained by Apple and
+   Google rather than by this repository.
 6. **Region picker UI** — `VpnController.selectServer()` is ready and has no
    button. It arrives when a second node does.

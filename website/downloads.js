@@ -15,9 +15,7 @@ const grid = document.getElementById('download-grid');
 /** Best guess at which card to highlight, from the user agent. */
 function guessPlatform() {
   const ua = navigator.userAgent;
-  // Phones have no download: they connect over IKEv2 from their own
-  // Settings screen, which the page explains instead of offering a file.
-  if (/Android|iPhone|iPad/i.test(ua)) return null;
+  if (/Android|iPhone|iPad/i.test(ua)) return 'phone';
   if (/Mac/i.test(ua)) return 'macos';
   if (/Linux/i.test(ua)) return 'linux';
   if (/Win/i.test(ua)) return 'windows';
@@ -90,13 +88,17 @@ async function render() {
     ...PLATFORMS.map((platform) => card(platform, release, platform.key === current)),
   );
 
-  // iOS has no download: the App Store build does not exist yet, and there is
-  // no sideloading story worth putting in front of a user.
-  if (current === 'ios') {
+  // Phones have nothing to download, and that is the feature rather than a
+  // gap: they connect over IKEv2 from their own Settings screen. Saying so
+  // here is the difference between "no build for me" and "no build needed".
+  if (current === 'phone') {
     grid.append(
       Object.assign(document.createElement('p'), {
         className: 'browser-note',
-        textContent: 'iOS sürümü henüz hazır değil.',
+        textContent:
+          'Telefonlar için indirilecek bir şey yok: Ayarlar > VPN üzerinden ' +
+          'IKEv2 ile bağlanırsınız. Sunucu adresini ve şifreyi sunucunuzda ' +
+          'setup-ikev2.sh çalıştırınca görürsünüz.',
       }),
     );
   }

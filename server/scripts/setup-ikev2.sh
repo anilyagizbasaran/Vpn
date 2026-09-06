@@ -116,9 +116,11 @@ ESP="aes256gcm16-ecp384,aes256-sha256,aes256-sha1"
 read -r -d '' IPSEC_CONF <<EOF || true
 # Managed by setup-ikev2.sh — do not edit; re-run the script instead.
 config setup
-    # No per-connection logging. The database keeps no history of who
-    # connected and when; charon must not keep one either.
-    charondebug="ike 0, knl 0, cfg 0, net 0, esp 0, dmn 0, mgr 0"
+    # Silent, not merely undebugged. Level 0 is charon's *audit* level and
+    # still writes "<address> is initiating an IKE_SA" for every connection —
+    # which is a log of who connected and when, the exact record the database
+    # is built to avoid. -1 is the level that says nothing.
+    charondebug="ike -1, knl -1, cfg -1, net -1, esp -1, dmn -1, mgr -1, chd -1, job -1, enc -1, lib -1"
     strictcrlpolicy=no
     uniqueids=never
 

@@ -77,10 +77,13 @@ if command -v ipsec >/dev/null 2>&1 && [[ -d /etc/ipsec.d ]]; then
 else
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  # extauth-plugins carries eap-mschapv2, which is what iOS and Android ask
-  # for; without it the phone gets as far as the certificate and then fails
-  # with a message that says nothing useful.
-  apt-get install -y -qq strongswan libcharon-extauth-plugins iptables >/dev/null
+  # Both plugin packages are needed and each fails differently when missing.
+  # extauth carries eap-mschapv2, without which the phone gets as far as the
+  # certificate and stops. extra carries eap-identity: without it charon logs
+  # "EAP-Identity request configured, but not supported", jumps straight to
+  # MSCHAPv2, and iOS answers nothing at all.
+  apt-get install -y -qq strongswan libcharon-extauth-plugins \
+    libcharon-extra-plugins iptables >/dev/null
   ok "strongswan"
 fi
 
@@ -161,22 +164,30 @@ fi
 
 log "ipsec.secrets"
 
-# The key type has to be named exactly, and Let's Encrypt issues ECDSA by
-# default now. Naming the wrong one does not warn: strongSwan loads no secret
-# at all, cannot authenticate itself, and every phone gets AUTH_FAILED after a
-# handshake that looked like it was working.
+# The key type has to be named exactly, and naming the wrong one does not
+# warn: strongSwan loads no key at all, cannot authenticate itself, and every
+# phone gets AUTH_FAILED after a handshake that looked like it was working.
 #
 # Checked against "NIST CURVE" rather than the first line: an EC key's own
 # header just reads "Private-Key: (256 bit)", which contains nothing that says
-# EC — the previous version of this check read that line and always concluded
-# RSA. A 256-bit RSA key does not exist, so the size alone already gives it
-# away; the curve line is the explicit confirmation.
+# EC. A 256-bit RSA key does not exist, so the size already gives it away; the
+# curve line is the explicit confirmation.
 if openssl pkey -in "$LIVE/privkey.pem" -noout -text 2>/dev/null | grep -qi 'NIST CURVE\|ASN1 OID'; then
   KEY_TYPE="ECDSA"
 else
   KEY_TYPE="RSA"
 fi
 ok "server key is $KEY_TYPE"
+
+# An iPhone set up by hand — Settings, not a configuration profile — refuses
+# ECDSA server certificates outright, and refuses them in silence: it reads
+# the response and answers nothing, so the server just sees the SA time out
+# half open. macOS accepts them, which makes this easy to misdiagnose.
+# See https://docs.strongswan.org/docs/latest/interop/ios.html
+if [ "$KEY_TYPE" = "ECDSA" ]; then
+  warn "this certificate is ECDSA; iPhones configured by hand will not accept it" \
+    "reissue as RSA: certbot certonly --key-type rsa --cert-name $DOMAIN -d $DOMAIN --force-renewal"
+fi
 
 umask 077
 cat > /etc/ipsec.secrets <<EOF
@@ -205,6 +216,37 @@ install -m 644 "$LIVE/fullchain.pem" /etc/ipsec.d/certs/fullchain.pem
 install -m 644 "$LIVE/chain.pem"     /etc/ipsec.d/cacerts/chain.pem
 install -m 600 "$LIVE/privkey.pem"   /etc/ipsec.d/private/privkey.pem
 ok "copied into /etc/ipsec.d"
+
+# Let's Encrypt began issuing from a new root hierarchy in January 2026 —
+# Root YR for RSA, Root YE for ECDSA — and phones will not have those roots
+# for years, because a phone's trust store moves with its OS. The chain
+# certbot writes therefore ends at a root the phone has never heard of, and
+# the phone rejects the server without saying so.
+#
+# Both new roots are cross-signed by the old ones, which is the way out: hand
+# strongSwan the cross-signed copy and the chain reaches ISRG Root X1 or X2,
+# which every phone in use trusts. Fetched rather than bundled so it is
+# whatever Let's Encrypt currently publishes, and skipped without complaint
+# when there is no network or the chain already ends somewhere trusted.
+log "cross-signed root for older trust stores"
+issuer="$(openssl x509 -in "$LIVE/chain.pem" -noout -issuer 2>/dev/null || true)"
+cross=""
+case "$issuer" in
+  *"Root YR"*) cross="root-yr-by-x1.pem" ;;
+  *"Root YE"*) cross="root-ye-by-x2.pem" ;;
+esac
+
+if [ -z "$cross" ]; then
+  skip "chain already ends at a widely trusted root"
+elif curl -fsSL --max-time 30 "https://letsencrypt.org/certs/gen-y/$cross" \
+       -o "/etc/ipsec.d/cacerts/$cross" 2>/dev/null; then
+  chmod 644 "/etc/ipsec.d/cacerts/$cross"
+  ok "added $cross"
+else
+  rm -f "/etc/ipsec.d/cacerts/$cross"
+  warn "could not fetch $cross" \
+    "phones may reject this server until it is added to /etc/ipsec.d/cacerts/"
+fi
 
 cat > /etc/letsencrypt/renewal-hooks/deploy/10-reload-strongswan.sh <<HOOK
 #!/bin/sh

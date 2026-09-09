@@ -449,20 +449,35 @@ class VpnController extends ChangeNotifier {
   Future<void> connect() async {
     if (_action != VpnAction.idle) return;
 
-    // Asked before acting, because the service may have been told something
-    // by the browser extension since this screen last looked. Correcting the
-    // screen beats producing an error about a mode the user cannot see they
-    // are already in.
-    await refreshBrowserTunnel();
-    if (_browser.running) return;
-
-    if (_mode == VpnMode.browser) return _startBrowserOnly();
-
+    // Claimed before the first await, always. The line above is the only
+    // thing stopping a second tap from starting a second connect, and it can
+    // only do that if the state it reads has already been set — an await
+    // before this point is a window two taps fit through.
     _action = VpnAction.preparing;
     _error = null;
     notifyListeners();
 
     try {
+      // Asked before acting, because the service may have been told something
+      // by the browser extension since this screen last looked. Correcting
+      // the screen beats producing an error about a mode the user cannot see
+      // they are already in.
+      await refreshBrowserTunnel();
+      if (_browser.running) return;
+
+      if (_mode == VpnMode.browser) {
+        // No config is prepared and no key is touched, unlike the path below:
+        // the service holds the identity and builds the tunnel itself. All
+        // that comes back is a loopback address.
+        final browser = _browserTunnel;
+        if (browser == null) return;
+
+        _action = VpnAction.connecting;
+        notifyListeners();
+        _browser = await browser.start();
+        return;
+      }
+
       // Asked first, because on desktop the answer is yes and the app has no
       // private key to build a config with — the daemon enrolled this machine
       // and kept it. Everywhere else this is a cheap false and the old path
@@ -494,13 +509,16 @@ class VpnController extends ChangeNotifier {
 
   Future<void> disconnect() async {
     if (_action != VpnAction.idle) return;
-    if (_browser.running) return _stopBrowserOnly();
 
     _action = VpnAction.disconnecting;
     _error = null;
     notifyListeners();
 
     try {
+      if (_browser.running) {
+        await _stopBrowserOnly();
+        return;
+      }
       await _tunnel.stop();
     } on TunnelException catch (error) {
       _error = error.message;
@@ -512,50 +530,17 @@ class VpnController extends ChangeNotifier {
 
   Future<void> toggle() => isActive ? disconnect() : connect();
 
-  /// Starts the browser tunnel.
-  ///
-  /// No config is prepared and no key is touched here, unlike [connect]: the
-  /// service holds the identity and builds the tunnel itself. All that comes
-  /// back is a loopback address.
-  Future<void> _startBrowserOnly() async {
-    final browser = _browserTunnel;
-    if (browser == null) return;
-
-    _action = VpnAction.connecting;
-    _error = null;
-    notifyListeners();
-
-    try {
-      _browser = await browser.start();
-    } on TunnelException catch (error) {
-      _error = error.message;
-    } catch (error) {
-      _error = 'Unexpected error while starting the browser tunnel: $error';
-    } finally {
-      _action = VpnAction.idle;
-      notifyListeners();
-    }
-  }
-
+  /// Stops the browser tunnel. Called from [disconnect], which owns the
+  /// in-flight flag and the error handling around it.
   Future<void> _stopBrowserOnly() async {
     final browser = _browserTunnel;
-    if (browser == null) return;
-
-    _action = VpnAction.disconnecting;
-    _error = null;
-    notifyListeners();
-
     try {
-      await browser.stop();
-    } on TunnelException catch (error) {
-      _error = error.message;
+      await browser?.stop();
     } finally {
       // Cleared whatever happened. A switch stuck on because the thing it
       // controls could not be reached is worse than one that says off and is:
       // the user can try again, and nothing here claims protection.
       _browser = BrowserTunnelState.off;
-      _action = VpnAction.idle;
-      notifyListeners();
     }
   }
 

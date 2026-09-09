@@ -1057,6 +1057,18 @@ void main() {
       expect(vpn.browserTunnel.port, 51000);
     });
 
+    test('a second tap does not start a second browser tunnel', () async {
+      // The same guard as the system tunnel, and it broke once: an await
+      // placed before the in-flight flag is set is a window two taps fit
+      // through, and the second one starts a tunnel nothing is tracking.
+      vpn.setMode(VpnMode.browser);
+
+      await Future.wait([vpn.toggle(), vpn.toggle()]);
+
+      expect(browser.startCalls, 1);
+      expect(browser.stopCalls, 0);
+    });
+
     test('a service that cannot answer does not become a claim', () async {
       // refreshBrowserTunnel runs on the way into every connect. An error
       // there must leave the last known state alone rather than inventing

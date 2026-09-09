@@ -274,8 +274,10 @@ void main() {
       expect(tester.takeException(), isNull);
 
       // And the button is still there to press, rather than having been the
-      // thing that was pushed off.
-      expect(find.byIcon(Icons.power_settings_new_rounded), findsOneWidget);
+      // thing that was pushed off. Found by the label a screen reader would
+      // announce, which is what says the button means what it looks like —
+      // the icon changes with the state and would pass while saying nothing.
+      expect(find.bySemanticsLabel('Disconnect'), findsOneWidget);
       expect(find.text('Browser proxy'), findsOneWidget);
     });
   });

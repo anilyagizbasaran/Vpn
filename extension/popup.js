@@ -152,6 +152,28 @@ function render(reply, connectedSince) {
     return;
   }
 
+  if (reply.browserFailed === true) {
+    // The tunnel died and the proxy setting was deliberately left in place, so
+    // the browser is blocked rather than leaking. Saying so is the whole
+    // point: without this the person sees every page fail and no reason for
+    // it, which is indistinguishable from the extension being broken.
+    mode = 'browser';
+    dot.dataset.state = 'failed';
+    stageEl.textContent = 'Browser tunnel stopped';
+    detailEl.textContent = 'Browsing is blocked so nothing leaves unprotected';
+    uptimeEl.hidden = true;
+    renderModes(false);
+    toggle.textContent = 'Reconnect';
+    toggle.dataset.action = MODE_ACTIONS.browser.on;
+    toggle.disabled = false;
+    delete toggle.dataset.state;
+    showError(
+      'The browser tunnel stopped on its own. Reconnect, or switch it off to ' +
+        'browse without it.',
+    );
+    return;
+  }
+
   const stage = reply.stage ?? 'disconnected';
   const busy = BUSY.has(stage);
   const browserOnly = reply.browserOnly === true;

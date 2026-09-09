@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"vpnd/internal/browser"
 	"vpnd/internal/protocol"
@@ -231,6 +232,78 @@ func TestStoppingBrowserOnlyClearsTheStatus(t *testing.T) {
 	if !h.response(12).OK {
 		t.Fatal("stopping an already stopped browser tunnel failed")
 	}
+}
+
+func TestACrashIsReportedDifferentlyFromBeingTurnedOff(t *testing.T) {
+	// Whatever holds the browser's proxy setting decides what to do from this
+	// one field. Get it wrong and a crashed tunnel is treated as a switch-off:
+	// the proxy is undone and the next request leaves from the real address,
+	// with pages still loading and nothing on screen changed.
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	var helper *fakeHelper
+	supervisor := browser.New(func(context.Context, string) (browser.Session, error) {
+		helper = newFakeHelper(49152)
+		return helper, nil
+	}, log)
+
+	h := newHarnessWith(t, func(s *Server) { s.SetBrowser(supervisor) })
+	h.remember(t, 1)
+
+	h.send(10, protocol.MethodStartBrowserOnly, nil)
+	if status := browserResult(t, h.response(10)); status.BrowserFailed {
+		t.Fatal("a freshly started tunnel is reported as failed")
+	}
+
+	// It dies on its own.
+	helper.Stop()
+	waitForStatus(t, h, 20, func(s protocol.StatusResult) bool { return !s.BrowserOnly })
+
+	h.send(30, protocol.MethodStatus, nil)
+	var status protocol.StatusResult
+	if err := json.Unmarshal(h.response(30).Result, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.BrowserOnly {
+		t.Fatal("a dead tunnel is still reported as running")
+	}
+	if !status.BrowserFailed {
+		t.Fatal("a crash is indistinguishable from being switched off")
+	}
+
+	// And switching it off clears that, so the proxy setting can be undone.
+	// Into a fresh value: the field is omitted when false, and unmarshalling
+	// into the one above would leave the earlier true standing.
+	h.send(31, protocol.MethodStopBrowserOnly, nil)
+	var afterStop protocol.StatusResult
+	if err := json.Unmarshal(h.response(31).Result, &afterStop); err != nil {
+		t.Fatal(err)
+	}
+	if afterStop.BrowserFailed {
+		t.Fatal("turning it off still reports the earlier crash")
+	}
+}
+
+// waitForStatus polls until the daemon's status satisfies want.
+func waitForStatus(
+	t *testing.T,
+	h *harness,
+	id uint64,
+	want func(protocol.StatusResult) bool,
+) {
+	t.Helper()
+	for i := uint64(0); i < 40; i++ {
+		h.send(id+i, protocol.MethodStatus, nil)
+		var status protocol.StatusResult
+		if err := json.Unmarshal(h.response(id+i).Result, &status); err != nil {
+			t.Fatal(err)
+		}
+		if want(status) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("the daemon never reported the state this test was waiting for")
 }
 
 func TestBrowserOnlyNeedsTheMachineToBeSetUp(t *testing.T) {

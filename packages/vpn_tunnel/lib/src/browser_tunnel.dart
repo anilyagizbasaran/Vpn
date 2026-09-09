@@ -12,12 +12,25 @@ library;
 
 /// What the browser tunnel is doing, and where to reach it.
 class BrowserTunnelState {
-  const BrowserTunnelState({required this.running, this.host, this.port});
+  const BrowserTunnelState({
+    required this.running,
+    this.host,
+    this.port,
+    this.failed = false,
+  });
 
   /// The state to assume when nothing has been asked yet.
   static const off = BrowserTunnelState(running: false);
 
   final bool running;
+
+  /// Whether it ended without being asked to.
+  ///
+  /// Kept apart from [running] because the two call for different words on
+  /// screen. "Off" is what the user chose; this is something that happened to
+  /// them, and the browser is now blocked rather than leaking — which they
+  /// have no way to work out from a screen that just says off.
+  final bool failed;
 
   /// Always loopback when running. Carried rather than assumed so nothing
   /// downstream invents an address of its own — that is how a proxy ends up

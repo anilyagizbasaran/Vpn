@@ -169,6 +169,77 @@ func TestStoppingWhenNothingRunsIsNotAFailure(t *testing.T) {
 	}
 }
 
+func TestACrashIsRememberedAsACrash(t *testing.T) {
+	// The whole point. Anything holding the browser's proxy setting has to be
+	// able to tell "the user turned it off" from "it died": undoing the proxy
+	// on the second one sends the next request out of the real adapter, from
+	// the real address, with pages still loading and nothing on screen
+	// changed.
+	session := newFake(3333)
+	s := New(func(context.Context, string) (Session, error) { return session, nil }, quiet())
+
+	if _, err := s.Start(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Failed() {
+		t.Fatal("a freshly started tunnel is reported as failed")
+	}
+
+	session.die()
+	waitFor(t, "the crash to be noticed", s.Failed)
+
+	// And it stays true: whatever is holding the proxy setting may not look
+	// for a minute.
+	if _, running := s.Running(); running {
+		t.Fatal("a dead tunnel is still reported as running")
+	}
+	if !s.Failed() {
+		t.Fatal("the crash was forgotten")
+	}
+}
+
+func TestTurningItOffIsNotAFailure(t *testing.T) {
+	session := newFake(3333)
+	s := New(func(context.Context, string) (Session, error) { return session, nil }, quiet())
+
+	if _, err := s.Start(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stop closes the session, which is also how a crash looks from the
+	// watcher's side. Reporting that as a failure would leave the browser
+	// pointed at a dead proxy after the user deliberately turned it off.
+	if s.Failed() {
+		t.Fatal("a tunnel the user turned off is reported as a crash")
+	}
+}
+
+func TestStartingAgainClearsAnEarlierCrash(t *testing.T) {
+	first, second := newFake(1111), newFake(2222)
+	next := []Session{first, second}
+	s := New(func(context.Context, string) (Session, error) {
+		session := next[0]
+		next = next[1:]
+		return session, nil
+	}, quiet())
+
+	if _, err := s.Start(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	first.die()
+	waitFor(t, "the crash to be noticed", s.Failed)
+
+	if _, err := s.Start(context.Background(), "b"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Failed() {
+		t.Fatal("a running tunnel still reports the previous crash")
+	}
+}
+
 func TestAHelperThatDiesStopsBeingReportedAsRunning(t *testing.T) {
 	// The browser fails closed when the proxy goes away — a refused connection
 	// is not a leak. But the status the user reads must not go on claiming a
@@ -234,5 +305,27 @@ func TestStopEndsTheHelperAndClearsTheState(t *testing.T) {
 	// Twice must be quiet, for the same reason as stopping when nothing runs.
 	if err := s.Stop(); err != nil {
 		t.Fatalf("second Stop: %v", err)
+	}
+}
+
+func TestStoppingAfterACrashClearsIt(t *testing.T) {
+	// Nothing is running, so Stop has nothing to stop — but it is still the
+	// user saying "off", and it is the only thing that lets whatever holds the
+	// browser's proxy setting undo it. Leaving the crash recorded here strands
+	// the browser blocked with no way back short of restarting the daemon.
+	session := newFake(3333)
+	s := New(func(context.Context, string) (Session, error) { return session, nil }, quiet())
+
+	if _, err := s.Start(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	session.die()
+	waitFor(t, "the crash to be noticed", s.Failed)
+
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if s.Failed() {
+		t.Fatal("switching it off left the crash recorded")
 	}
 }

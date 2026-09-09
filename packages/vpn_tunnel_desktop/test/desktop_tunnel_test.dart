@@ -43,6 +43,9 @@ class FakeDaemon {
   /// When set, `start_browser_only` fails with this message.
   String? browserError;
 
+  /// Set when the browser tunnel ended without being asked to.
+  bool browserFailed = false;
+
   Future<void> start() async {
     final dir = await Directory.systemTemp.createTemp('vpnd_test');
     path = '${dir.path}${Platform.pathSeparator}vpnd.sock';
@@ -108,6 +111,7 @@ class FakeDaemon {
         ok(_status());
       case 'stop_browser_only':
         socksPort = null;
+        browserFailed = false;
         ok(_status());
       case 'up':
         if (upDelay > Duration.zero) await Future<void>.delayed(upDelay);
@@ -166,8 +170,10 @@ class FakeDaemon {
       'browserOnly': true,
       'socksHost': '127.0.0.1',
       'socksPort': socksPort,
-    } else
+    } else ...{
       'browserOnly': false,
+      if (browserFailed) 'browserFailed': true,
+    },
   };
 
   /// Pushes an unsolicited stage event, as the daemon does for subscribers.
@@ -565,6 +571,21 @@ void main() {
       // Twice, because the switch has to work when the thing it controls has
       // already gone.
       await browser.stop();
+    });
+
+    test('a tunnel that died reads differently from one turned off', () async {
+      // Everything holding the browser's proxy setting decides what to do
+      // from this. Treating a crash as a switch-off undoes the proxy and puts
+      // the browser back on the real adapter without saying so.
+      daemon.browserFailed = true;
+
+      final state = await browser.state();
+
+      expect(state.running, isFalse);
+      expect(state.failed, isTrue);
+
+      daemon.browserFailed = false;
+      expect((await browser.state()).failed, isFalse);
     });
 
     test('a refusal reaches the user', () async {

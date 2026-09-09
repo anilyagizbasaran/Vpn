@@ -171,11 +171,13 @@ class _StatusLine extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final browserOnly = vpn.browserTunnel.running;
+    final browserFailed = vpn.browserTunnelFailed;
     final connected = vpn.isActive;
 
     final Color colour;
     if (vpn.stage == TunnelStage.permissionDenied ||
-        vpn.stage == TunnelStage.failed) {
+        vpn.stage == TunnelStage.failed ||
+        browserFailed) {
       colour = theme.colorScheme.error;
     } else if (connected) {
       colour = VpnColors.connected;
@@ -201,7 +203,13 @@ class _StatusLine extends StatelessWidget {
           // would be the one sentence on this screen that is actively false —
           // everything except the browser is on the ordinary connection, on
           // purpose, and the user chose that.
-          browserOnly
+          browserFailed
+              // The proxy setting is deliberately still in place, so the
+              // browser is blocked rather than leaking. Without saying so,
+              // every page failing looks like a bug rather than protection.
+              ? 'The browser tunnel stopped. Browsing is blocked until you '
+                    'reconnect or switch it off.'
+              : browserOnly
               ? 'Your browser goes through the VPN. Nothing else on this '
                     'computer does.'
               : connected

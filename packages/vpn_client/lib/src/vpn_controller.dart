@@ -150,6 +150,9 @@ class VpnController extends ChangeNotifier {
   /// Whether either tunnel is up. What the power button acts on.
   bool get isActive => isConnected || _browser.running;
 
+  /// Whether the browser tunnel ended on its own, leaving the browser blocked.
+  bool get browserTunnelFailed => _browser.failed;
+
   bool get isBusy => _action != VpnAction.idle || isBusyStage(_stage);
 
   /// Which tunnel the button will turn on.
@@ -180,6 +183,9 @@ class VpnController extends ChangeNotifier {
     // Named for what it is. "Connected" over an unchanged routing table would
     // be true of the browser and false of everything else on the machine.
     VpnAction.idle when _browser.running => 'Browser connected',
+    // Not "not connected". The browser is blocked rather than leaking, and
+    // that is a thing that happened rather than a thing the user chose.
+    VpnAction.idle when _browser.failed => 'Browser tunnel stopped',
     VpnAction.idle => describeStage(_stage),
   };
 
@@ -563,7 +569,9 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    if (state.running == _browser.running && state.port == _browser.port) {
+    if (state.running == _browser.running &&
+        state.port == _browser.port &&
+        state.failed == _browser.failed) {
       return;
     }
     _browser = state;

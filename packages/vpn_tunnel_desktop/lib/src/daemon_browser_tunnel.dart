@@ -57,7 +57,12 @@ class DaemonBrowserTunnel implements BrowserTunnel {
   }
 
   BrowserTunnelState _stateFrom(Map<String, dynamic> result) {
-    if (result['browserOnly'] != true) return BrowserTunnelState.off;
+    if (result['browserOnly'] != true) {
+      return BrowserTunnelState(
+        running: false,
+        failed: result['browserFailed'] == true,
+      );
+    }
     return BrowserTunnelState(
       running: true,
       host: result['socksHost'] as String?,

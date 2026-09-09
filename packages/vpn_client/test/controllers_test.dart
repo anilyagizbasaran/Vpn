@@ -1069,6 +1069,19 @@ void main() {
       expect(browser.stopCalls, 0);
     });
 
+    test('a tunnel that died is not shown as one that was switched off', () async {
+      // The two need different words. "Off" is what the user chose; this
+      // happened to them, and the browser is now blocked rather than leaking
+      // — which they cannot work out from a screen that just says off.
+      browser.state_ = const BrowserTunnelState(running: false, failed: true);
+
+      await vpn.refreshBrowserTunnel();
+
+      expect(vpn.browserTunnelFailed, isTrue);
+      expect(vpn.isActive, isFalse);
+      expect(vpn.statusLabel, 'Browser tunnel stopped');
+    });
+
     test('a service that cannot answer does not become a claim', () async {
       // refreshBrowserTunnel runs on the way into every connect. An error
       // there must leave the last known state alone rather than inventing

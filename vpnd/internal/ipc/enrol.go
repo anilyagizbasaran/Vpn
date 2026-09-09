@@ -90,6 +90,8 @@ func (s *Server) status() protocol.StatusResult {
 		if result.BrowserOnly {
 			// Named here, once, so nothing downstream has to know it.
 			result.SocksHost = "127.0.0.1"
+		} else {
+			result.BrowserFailed = s.browser.Failed()
 		}
 	}
 	return result

@@ -69,6 +69,11 @@ type Supervisor struct {
 
 	mu      sync.Mutex
 	current Session
+
+	// Set when a helper exited on its own, cleared when one is started or
+	// stopped on purpose. It is the only thing that can tell a crash from a
+	// decision after the fact.
+	failed bool
 	// Bumped on every start so a watcher from an old session cannot clear the
 	// state of a new one. Without it, stopping and starting quickly leaves a
 	// goroutine that fires late and reports the live tunnel as gone.
@@ -106,6 +111,7 @@ func (s *Supervisor) Start(ctx context.Context, config string) (int, error) {
 	}
 
 	s.current = session
+	s.failed = false
 	s.generation++
 	go s.watch(session, s.generation)
 
@@ -122,6 +128,13 @@ func (s *Supervisor) Stop() error {
 }
 
 func (s *Supervisor) stopLocked() error {
+	// Cleared first, and even when there is nothing to stop. Being switched
+	// off is a decision whether or not something was running — and after a
+	// crash this is the only thing that lets the caller undo the browser's
+	// proxy setting, so leaving it set here strands the browser blocked with
+	// no way back short of restarting the daemon.
+	s.failed = false
+
 	if s.current == nil {
 		return nil
 	}
@@ -149,6 +162,17 @@ func (s *Supervisor) Running() (int, bool) {
 	return s.current.Port(), true
 }
 
+// Failed reports whether the last tunnel ended without being asked to.
+//
+// Stays true until something is started or stopped on purpose, because the
+// caller that needs it — the thing holding the browser's proxy setting — may
+// not look for a minute.
+func (s *Supervisor) Failed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed
+}
+
 // watch clears the state when a helper dies on its own.
 //
 // The browser fails closed either way — a proxy that is not there refuses
@@ -163,5 +187,6 @@ func (s *Supervisor) watch(session Session, generation uint64) {
 		return // Already replaced or stopped on purpose.
 	}
 	s.current = nil
+	s.failed = true
 	s.log.Warn("the browser tunnel exited on its own")
 }

@@ -175,6 +175,17 @@ type StatusResult struct {
 	BrowserOnly bool   `json:"browserOnly"`
 	SocksHost   string `json:"socksHost,omitempty"`
 	SocksPort   int    `json:"socksPort,omitempty"`
+
+	// Set when the browser tunnel ended without being asked to.
+	//
+	// This distinction matters more than it looks. A caller that cannot tell
+	// "the user turned it off" from "it died" will undo the browser's proxy
+	// setting on both — and on the second one that sends the next request out
+	// of the real adapter, from the real address, with pages still loading
+	// and nothing on screen changed. So the daemon remembers which it was,
+	// and the browser stays pointed at a proxy that is not answering rather
+	// than being quietly let out.
+	BrowserFailed bool `json:"browserFailed,omitempty"`
 }
 
 // IdentityResult answers [MethodIdentity]. No key material: see the method.

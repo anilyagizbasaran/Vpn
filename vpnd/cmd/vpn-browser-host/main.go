@@ -55,6 +55,11 @@ type reply struct {
 	BrowserOnly bool   `json:"browserOnly"`
 	SocksHost   string `json:"socksHost,omitempty"`
 	SocksPort   int    `json:"socksPort,omitempty"`
+
+	// Set when the browser tunnel ended without being asked to. The extension
+	// keeps its proxy setting in that case rather than undoing it, which
+	// would put the browser back on the real adapter without saying so.
+	BrowserFailed bool `json:"browserFailed,omitempty"`
 }
 
 func main() {
@@ -141,12 +146,13 @@ func handle(req request, socketPath string) reply {
 	var status protocol.StatusResult
 	_ = json.Unmarshal(response.Result, &status)
 	return reply{
-		OK:          true,
-		Stage:       string(status.Stage),
-		Enrolled:    status.Enrolled,
-		BrowserOnly: status.BrowserOnly,
-		SocksHost:   status.SocksHost,
-		SocksPort:   status.SocksPort,
+		OK:            true,
+		Stage:         string(status.Stage),
+		Enrolled:      status.Enrolled,
+		BrowserOnly:   status.BrowserOnly,
+		SocksHost:     status.SocksHost,
+		SocksPort:     status.SocksPort,
+		BrowserFailed: status.BrowserFailed,
 	}
 }
 

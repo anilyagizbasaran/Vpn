@@ -227,6 +227,16 @@ UDP ASSOCIATE rather than half-implementing it, and the extension forces
 `disable_non_proxied_udp` while the mode is on, because the UDP that WebRTC
 would otherwise open is the one path out that a TCP proxy cannot cover.
 
+**A crashed browser tunnel is not the same as one that was switched off.**
+The daemon reports which it was, and everything holding the browser's proxy
+setting branches on that. It has to: undoing the proxy is right when the user
+turned the mode off and a leak when the helper died — the browser goes back to
+the real adapter, from the real address, with pages still loading and nothing
+on screen changed. So a crash leaves the proxy pointed at a port that is not
+answering. The browser is blocked rather than exposed, and both the popup and
+the app say so, because every page failing with no explanation is
+indistinguishable from the extension being broken.
+
 **The two modes exclude each other.** Enforced in the daemon, not the UI: two
 tunnels to the same peer would be two paths for the same traffic, and nothing
 on the machine could say which one carried a request. The app and the extension

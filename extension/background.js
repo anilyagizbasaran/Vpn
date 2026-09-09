@@ -290,6 +290,13 @@ async function reconcileProxy(reply) {
   if (!reply.ok) return;
 
   if (!reply.browserOnly || !reply.socksPort) {
+    // The tunnel died rather than being switched off. The proxy setting stays
+    // exactly where it is: undoing it would put the browser back on the real
+    // adapter, from the real address, with pages still loading and nothing on
+    // screen changed — which is the leak this mode exists to prevent. The
+    // browser gets a refused connection instead, and the popup says why.
+    if (reply.browserFailed) return;
+
     // Cleared unconditionally, not only when this session remembers setting
     // it. Chrome keeps the proxy setting across restarts and `appliedProxy`
     // does not, so a browser reopened after browser-only mode was on would
@@ -382,8 +389,21 @@ async function refreshBadge() {
   // Deliberately not a badge that says "off" when we simply cannot tell: an
   // empty badge means unknown, and claiming "off" would be as misleading as
   // claiming "on".
-  const badge = reply.ok ? (BADGES[reply.stage] ?? { text: '', color: '#666' })
-                         : { text: '?', color: '#666' };
+  // Browser-only mode has no stage of its own — the system tunnel below it is
+  // deliberately off — so it is badged from its own two states.
+  let badge;
+  if (!reply.ok) {
+    badge = { text: '?', color: '#666' };
+  } else if (reply.browserOnly) {
+    badge = { text: 'ON', color: '#1B873F' };
+  } else if (reply.browserFailed) {
+    // Not an empty badge. The browser is blocked rather than leaking, but it
+    // is blocked, and the person wondering why every page fails has to be
+    // able to see that from the toolbar.
+    badge = { text: '!', color: '#C4314B' };
+  } else {
+    badge = BADGES[reply.stage] ?? { text: '', color: '#666' };
+  }
 
   await chrome.action.setBadgeText({ text: badge.text });
   await chrome.action.setBadgeBackgroundColor({ color: badge.color });

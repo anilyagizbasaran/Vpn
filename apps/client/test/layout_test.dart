@@ -267,7 +267,16 @@ void main() {
       await _pumpAt(tester, const HomeScreen(), _smallPhone, vpn: vpn);
       await tester.pumpAndSettle();
 
+      // This overflowed by 82 pixels the first time it was measured, which
+      // paints a striped bar over whatever ran out of room. Browser-only is
+      // the crowded state: a mode switch, a longer explanation, and an extra
+      // row in the card.
       expect(tester.takeException(), isNull);
+
+      // And the button is still there to press, rather than having been the
+      // thing that was pushed off.
+      expect(find.byIcon(Icons.power_settings_new_rounded), findsOneWidget);
+      expect(find.text('Browser proxy'), findsOneWidget);
     });
   });
 

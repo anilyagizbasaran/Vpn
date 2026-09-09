@@ -85,24 +85,40 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 12),
               ],
 
+              // Centred while there is room, scrollable when there is not.
+              // Browser-only mode is the crowded state — a mode switch, a
+              // longer explanation and an extra row in the card — and on a
+              // narrow window that came to eighty-two pixels more than the
+              // screen had. Overflowing paints a striped bar over the button
+              // the user opened the app to press; scrolling keeps it
+              // reachable, and on an ordinary window nothing moves.
               Expanded(
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _PowerButton(
-                        connected: vpn.isActive,
-                        busy: vpn.isBusy,
-                        failed: vpn.stage == TunnelStage.failed,
-                        onPressed: vpn.isBusy ? null : vpn.toggle,
+                child: LayoutBuilder(
+                  builder: (context, constraints) => SingleChildScrollView(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
                       ),
-                      const SizedBox(height: 26),
-                      _StatusLine(vpn: vpn),
-                      if (vpn.supportsBrowserOnly) ...[
-                        const SizedBox(height: 22),
-                        _ModeSwitch(vpn: vpn),
-                      ],
-                    ],
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _PowerButton(
+                              connected: vpn.isActive,
+                              busy: vpn.isBusy,
+                              failed: vpn.stage == TunnelStage.failed,
+                              onPressed: vpn.isBusy ? null : vpn.toggle,
+                            ),
+                            const SizedBox(height: 26),
+                            _StatusLine(vpn: vpn),
+                            if (vpn.supportsBrowserOnly) ...[
+                              const SizedBox(height: 22),
+                              _ModeSwitch(vpn: vpn),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),

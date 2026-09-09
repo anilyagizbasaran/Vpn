@@ -448,6 +448,14 @@ class VpnController extends ChangeNotifier {
 
   Future<void> connect() async {
     if (_action != VpnAction.idle) return;
+
+    // Asked before acting, because the service may have been told something
+    // by the browser extension since this screen last looked. Correcting the
+    // screen beats producing an error about a mode the user cannot see they
+    // are already in.
+    await refreshBrowserTunnel();
+    if (_browser.running) return;
+
     if (_mode == VpnMode.browser) return _startBrowserOnly();
 
     _action = VpnAction.preparing;
@@ -560,7 +568,16 @@ class VpnController extends ChangeNotifier {
     final browser = _browserTunnel;
     if (browser == null) return;
 
-    final state = await browser.state();
+    final BrowserTunnelState state;
+    try {
+      state = await browser.state();
+    } catch (_) {
+      // Nothing running, or the service is unreachable. Leaving the last
+      // known state alone is the safe direction: this runs on the way into a
+      // connect, and a swallowed error must not become a claim.
+      return;
+    }
+
     if (state.running == _browser.running && state.port == _browser.port) {
       return;
     }

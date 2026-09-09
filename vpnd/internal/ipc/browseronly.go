@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"context"
+	"errors"
 
 	"vpnd/internal/browser"
 	"vpnd/internal/enroll"
@@ -51,6 +52,17 @@ func (s *Server) startBrowserOnly(ctx context.Context) (any, *protocol.Error) {
 	port, err := s.browser.Start(ctx, config)
 	if err != nil {
 		s.log.Error("could not start the browser-only tunnel", "error", err)
+
+		// An incomplete install is passed through verbatim, because it names
+		// the thing to fix. Everything else stays generic: the detail would be
+		// a network error the user cannot act on.
+		var setup *browser.SetupError
+		if errors.As(err, &setup) {
+			return nil, &protocol.Error{
+				Code:    protocol.CodeUnsupported,
+				Message: setup.Message,
+			}
+		}
 		return nil, &protocol.Error{
 			Code:    protocol.CodeTunnelFailure,
 			Message: "The browser tunnel could not be started.",

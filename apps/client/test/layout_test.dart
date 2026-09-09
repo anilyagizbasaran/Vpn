@@ -25,6 +25,34 @@ const _window = Size(380, 640);
 /// because the desktop window happens to be wide enough.
 const _smallPhone = Size(320, 568);
 
+/// Present so the mode switch is drawn at all.
+///
+/// Without one the app hides the choice — which is right in production and
+/// wrong here: it would leave the widget with the most text on this screen
+/// laid out nowhere, on a window that cannot be opened on the machine that
+/// builds it.
+class _FakeBrowserTunnel implements BrowserTunnel {
+  BrowserTunnelState _state = BrowserTunnelState.off;
+
+  @override
+  Future<BrowserTunnelState> state() async => _state;
+
+  @override
+  Future<BrowserTunnelState> start() async {
+    _state = const BrowserTunnelState(
+      running: true,
+      host: '127.0.0.1',
+      port: 49152,
+    );
+    return _state;
+  }
+
+  @override
+  Future<void> stop() async {
+    _state = BrowserTunnelState.off;
+  }
+}
+
 class _FakeTunnel implements Tunnel {
   final _stages = StreamController<TunnelStage>.broadcast();
   TunnelStage current = TunnelStage.disconnected;
@@ -89,18 +117,25 @@ void _installStorage(Map<String, String> values) {
       });
 }
 
-Widget _wrap(Widget child, {required Brightness brightness}) {
+Widget _wrap(
+  Widget child, {
+  required Brightness brightness,
+  VpnController? vpn,
+}) {
   final store = SecureStore();
   final api = ApiClient(store: store, baseUrl: 'https://vpn.example.com');
 
   return MultiProvider(
     providers: [
       ChangeNotifierProvider(
-        create: (_) => VpnController(
-          devices: DeviceRepository(api: api),
-          store: store,
-          tunnel: _FakeTunnel(),
-        ),
+        create: (_) =>
+            vpn ??
+            VpnController(
+              devices: DeviceRepository(api: api),
+              store: store,
+              tunnel: _FakeTunnel(),
+              browserTunnel: _FakeBrowserTunnel(),
+            ),
       ),
       ChangeNotifierProvider(
         create: (_) => EnrollController(
@@ -130,12 +165,13 @@ Future<void> _pumpAt(
   Widget screen,
   Size size, {
   Brightness brightness = Brightness.dark,
+  VpnController? vpn,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
-  await tester.pumpWidget(_wrap(screen, brightness: brightness));
+  await tester.pumpWidget(_wrap(screen, brightness: brightness, vpn: vpn));
   await tester.pump();
 }
 
@@ -177,6 +213,61 @@ void main() {
       expect(find.text('Your IP'), findsOneWidget);
       expect(find.text('VPN IP'), findsNothing);
       expect(find.byIcon(Icons.power_settings_new_rounded), findsOneWidget);
+    });
+
+    testWidgets('offers the two modes, and locks them once one is on', (
+      tester,
+    ) async {
+      final vpn = VpnController(
+        devices: DeviceRepository(
+          api: ApiClient(store: SecureStore(), baseUrl: 'https://x.example'),
+        ),
+        store: SecureStore(),
+        tunnel: _FakeTunnel(),
+        browserTunnel: _FakeBrowserTunnel(),
+      );
+
+      await _pumpAt(tester, const HomeScreen(), _window, vpn: vpn);
+
+      expect(find.text('Whole computer'), findsOneWidget);
+      expect(find.text('Browser only'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // Turn the browser tunnel on and let the screen catch up. This is the
+      // wider of the two states — a proxy row appears in the card and the
+      // detail line grows to two lines — so it is the one that overflows.
+      vpn.setMode(VpnMode.browser);
+      await tester.pump();
+      await vpn.toggle();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Browser proxy'), findsOneWidget);
+      expect(find.text('127.0.0.1:49152'), findsOneWidget);
+      expect(find.text('Disconnect to change this.'), findsOneWidget);
+      // The address on screen is this computer's, because the app is not the
+      // browser and is not proxied. Labelled so, or it reads as a failure.
+      expect(find.text('This computer'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('browser-only mode fits the narrow window', () {
+    testWidgets('on a 320-wide phone with the proxy showing', (tester) async {
+      final vpn = VpnController(
+        devices: DeviceRepository(
+          api: ApiClient(store: SecureStore(), baseUrl: 'https://x.example'),
+        ),
+        store: SecureStore(),
+        tunnel: _FakeTunnel(),
+        browserTunnel: _FakeBrowserTunnel(),
+      );
+      vpn.setMode(VpnMode.browser);
+      await vpn.toggle();
+
+      await _pumpAt(tester, const HomeScreen(), _smallPhone, vpn: vpn);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
     });
   });
 

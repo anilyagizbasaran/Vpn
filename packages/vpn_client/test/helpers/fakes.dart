@@ -224,8 +224,14 @@ class FakeBrowserTunnel implements BrowserTunnel {
   /// tunnel is already up.
   Object? startError;
 
+  /// Set to make [state] fail, as it does when there is no daemon running.
+  Object? stateError;
+
   @override
-  Future<BrowserTunnelState> state() async => state_;
+  Future<BrowserTunnelState> state() async {
+    if (stateError != null) throw stateError!;
+    return state_;
+  }
 
   @override
   Future<BrowserTunnelState> start() async {

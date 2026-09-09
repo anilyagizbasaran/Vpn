@@ -27,9 +27,12 @@ func applyCredentials(cmd *exec.Cmd, creds Credentials) error {
 		// Refused rather than run as root. This is the whole reason the helper
 		// is a separate binary; starting it privileged because an account was
 		// missing would quietly give up the thing being protected.
-		return fmt.Errorf(
-			"the browser tunnel cannot run unprivileged: there is no %q account. "+
-				"Start the daemon with --browser-proxy-user naming one", name)
+		return &SetupError{
+			Message: fmt.Sprintf(
+				"The browser tunnel will not run as root, and there is no %q account "+
+					"to drop to. Start the daemon with --browser-proxy-user naming one.", name),
+			Err: err,
+		}
 	}
 
 	uid, err := parseID(account.Uid)

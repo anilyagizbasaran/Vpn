@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -263,5 +264,29 @@ func TestADaemonWithoutBrowserSupportSaysSo(t *testing.T) {
 		if response.Error.Code != protocol.CodeUnsupported {
 			t.Fatalf("%s answered %q", method, response.Error.Code)
 		}
+	}
+}
+
+func TestAnIncompleteInstallSaysWhatIsMissing(t *testing.T) {
+	// A daemon upgraded on top of an older install has everything except the
+	// helper binary. "The browser tunnel could not be started" would send the
+	// user looking at their network for a problem that is on their disk.
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	supervisor := browser.New(func(context.Context, string) (browser.Session, error) {
+		return nil, &browser.SetupError{
+			Message: "The browser tunnel helper (vpn-browser-proxy) is not installed.",
+		}
+	}, log)
+
+	h := newHarnessWith(t, func(s *Server) { s.SetBrowser(supervisor) })
+	h.remember(t, 1)
+
+	h.send(10, protocol.MethodStartBrowserOnly, nil)
+	response := h.response(10)
+	if response.OK {
+		t.Fatal("a missing helper was reported as a success")
+	}
+	if !strings.Contains(response.Error.Message, "vpn-browser-proxy") {
+		t.Fatalf("the message does not name the missing file: %q", response.Error.Message)
 	}
 }

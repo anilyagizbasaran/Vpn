@@ -200,6 +200,20 @@ sudo systemctl enable --now vpnd
 > running to the SCM, and on a stop request it brings the tunnel down before
 > exiting.
 >
+Browser-only mode can be checked without a browser, which is how it was first
+verified:
+
+```bash
+vpnctl browser-on          # prints the loopback port
+curl --socks5-hostname 127.0.0.1:<port> https://ifconfig.me   # the server
+curl https://ifconfig.me                                       # your own
+ip route                   # unchanged, and there is no wg interface
+vpnctl browser-off
+```
+
+The two `curl`s run seconds apart on one machine and must disagree. If they
+agree, the proxy is not carrying the traffic.
+
 > To run it without installing a service while developing:
 >
 > ```powershell

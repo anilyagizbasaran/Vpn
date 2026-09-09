@@ -41,6 +41,27 @@ type Session interface {
 // Launcher starts one helper with the given wg-quick configuration.
 type Launcher func(ctx context.Context, config string) (Session, error)
 
+// SetupError is a failure the person at the keyboard can act on: the helper is
+// not installed, or the account it should drop to does not exist.
+//
+// Distinguished from every other failure because the answer is different. A
+// tunnel that would not come up is "try again"; a helper that is not there is
+// "the install is incomplete", and reporting the second as the first sends
+// someone looking at their network for a problem that is on their disk.
+type SetupError struct {
+	Message string
+	Err     error
+}
+
+func (e *SetupError) Error() string {
+	if e.Err == nil {
+		return e.Message
+	}
+	return e.Message + ": " + e.Err.Error()
+}
+
+func (e *SetupError) Unwrap() error { return e.Err }
+
 // Supervisor owns at most one helper at a time.
 type Supervisor struct {
 	launch Launcher

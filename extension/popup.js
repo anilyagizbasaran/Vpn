@@ -81,6 +81,9 @@ const BUSY = new Set(['connecting', 'preparing', 'disconnecting']);
 function showSetup(show) {
   setupForm.hidden = !show;
   toggle.hidden = show;
+  // The mode switch goes with the button: choosing what to protect on a
+  // machine that has nothing to protect it with is a decision about nothing.
+  modesEl.hidden = show;
 }
 
 function send(message) {

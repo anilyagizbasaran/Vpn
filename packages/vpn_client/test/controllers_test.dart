@@ -1038,6 +1038,37 @@ void main() {
       expect(vpn.isActive, isFalse);
     });
 
+    test('pressing Connect on a stale screen corrects it', () async {
+      // The extension drives the same service. If it turned browser-only on
+      // while this window sat open, Connect must not try to raise a second
+      // tunnel — it must notice and show what is actually running.
+      browser.state_ = const BrowserTunnelState(
+        running: true,
+        host: '127.0.0.1',
+        port: 51000,
+      );
+
+      await vpn.connect();
+
+      expect(tunnel.ownIdentityStarts, 0);
+      expect(tunnel.startedConfigs, isEmpty);
+      expect(vpn.mode, VpnMode.browser);
+      expect(vpn.isActive, isTrue);
+      expect(vpn.browserTunnel.port, 51000);
+    });
+
+    test('a service that cannot answer does not become a claim', () async {
+      // refreshBrowserTunnel runs on the way into every connect. An error
+      // there must leave the last known state alone rather than inventing
+      // one — in either direction.
+      browser.stateError = const TunnelException('no daemon');
+
+      await vpn.refreshBrowserTunnel();
+
+      expect(vpn.isActive, isFalse);
+      expect(vpn.browserTunnel.running, isFalse);
+    });
+
     test('signing out takes the browser tunnel down too', () async {
       vpn.setMode(VpnMode.browser);
       await vpn.toggle();

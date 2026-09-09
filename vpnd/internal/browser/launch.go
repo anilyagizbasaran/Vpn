@@ -105,7 +105,10 @@ func NewLauncher(helperPath string, drop Credentials) Launcher {
 func resolveHelper(helperPath string) (string, error) {
 	if helperPath != "" {
 		if _, err := os.Stat(helperPath); err != nil {
-			return "", fmt.Errorf("the browser tunnel helper is not at %s", helperPath)
+			return "", &SetupError{
+				Message: "The browser tunnel helper is not at " + helperPath,
+				Err:     err,
+			}
 		}
 		return helperPath, nil
 	}
@@ -120,7 +123,14 @@ func resolveHelper(helperPath string) (string, error) {
 	}
 	path := filepath.Join(filepath.Dir(self), name)
 	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("the browser tunnel helper is not installed at %s", path)
+		// Named, because this is the actionable case: a daemon upgraded on
+		// top of an older install has everything except this one file, and
+		// "the browser tunnel could not be started" would send the user
+		// looking at their network for a problem that is on their disk.
+		return "", &SetupError{
+			Message: "The browser tunnel helper (" + name + ") is not installed next to the VPN service.",
+			Err:     err,
+		}
 	}
 	return path, nil
 }

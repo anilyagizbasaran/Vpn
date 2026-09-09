@@ -30,7 +30,7 @@ func main() {
 
 	command := flag.Arg(0)
 	if command == "" {
-		fmt.Fprintln(os.Stderr, "usage: vpnctl [flags] version|status|up|down|watch")
+		fmt.Fprintln(os.Stderr, "usage: vpnctl [flags] version|status|up|down|watch|browser-on|browser-off")
 		os.Exit(2)
 	}
 
@@ -55,6 +55,13 @@ func run(socketPath, command, configPath, server string, timeout time.Duration) 
 	switch command {
 	case "version", "status", "down":
 		request.Method = command
+	case "browser-on":
+		// Browser-only mode, for checking it without a browser. The reply is
+		// a status naming the loopback port, which is what a curl through the
+		// proxy needs.
+		request.Method = protocol.MethodStartBrowserOnly
+	case "browser-off":
+		request.Method = protocol.MethodStopBrowserOnly
 	case "up":
 		if configPath == "" {
 			return fmt.Errorf("up needs -config")

@@ -70,7 +70,11 @@ func newNetTun(addresses []netip.Addr, mtu int) (*netTun, error) {
 	})
 
 	dev := &netTun{
-		ep:     channel.New(1024, uint32(mtu), ""),
+		// Deep enough that a burst arriving while the reader is busy queues
+		// rather than being dropped. A drop here looks like packet loss to
+		// the far end, and TCP answers loss by slowing down — which is how a
+		// fast line ends up delivering a fraction of itself.
+		ep:     channel.New(2048, uint32(mtu), ""),
 		stack:  s,
 		events: make(chan tun.Event, 4),
 		mtu:    mtu,
@@ -79,6 +83,10 @@ func newNetTun(addresses []netip.Addr, mtu int) (*netTun, error) {
 
 	if err := s.CreateNIC(nicID, dev.ep); err != nil {
 		return nil, fmt.Errorf("create nic: %v", err)
+	}
+
+	if err := tuneTCP(s); err != nil {
+		return nil, err
 	}
 
 	for _, addr := range addresses {
@@ -106,6 +114,47 @@ func newNetTun(addresses []netip.Addr, mtu int) (*netTun, error) {
 	return dev, nil
 }
 
+// tuneTCP raises the window this stack is willing to open.
+//
+// The defaults are sized for a stack talking to something nearby. This one is
+// talking through a tunnel to another country: at 60 ms round trip a
+// connection cannot go faster than its window divided by the round trip, so a
+// few hundred kilobytes of buffer is a hard ceiling of about twenty megabits
+// however fast the line underneath is. Measured before and after on a real
+// tunnel, not assumed.
+//
+// Auto-tuning is what makes the large maximum safe: a connection that does not
+// need the window does not hold the memory.
+func tuneTCP(s *stack.Stack) error {
+	sizes := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     4 << 10,  // 4 KiB
+		Default: 1 << 20,  // 1 MiB
+		Max:     16 << 20, // 16 MiB
+	}
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &sizes); err != nil {
+		return fmt.Errorf("tcp receive buffer: %v", err)
+	}
+
+	send := tcpip.TCPSendBufferSizeRangeOption(sizes)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
+		return fmt.Errorf("tcp send buffer: %v", err)
+	}
+
+	moderate := tcpip.TCPModerateReceiveBufferOption(true)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &moderate); err != nil {
+		return fmt.Errorf("tcp receive buffer moderation: %v", err)
+	}
+
+	// Selective acknowledgement. Without it a single lost packet costs the
+	// whole window rather than the packet, which over a tunnel crossing a
+	// continent is the difference between a slow moment and a stalled one.
+	sack := tcpip.TCPSACKEnabled(true)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &sack); err != nil {
+		return fmt.Errorf("tcp sack: %v", err)
+	}
+	return nil
+}
+
 // Stack exposes the network stack so the SOCKS server can dial through it.
 func (d *netTun) Stack() *stack.Stack { return d.stack }
 
@@ -123,26 +172,47 @@ func (d *netTun) Name() (string, error) { return "browser", nil }
 
 // BatchSize of one keeps the loop below simple. Throughput here is bounded by
 // a browser's connections, not by syscall batching, so the trade is free.
-func (d *netTun) BatchSize() int { return 1 }
+// batchSize is how many packets wireguard-go is offered per Read.
+//
+// One at a time is the obvious implementation and it is what costs the
+// throughput: every packet then pays for a channel wake-up and a trip through
+// the encryption pipeline on its own. Measured on a real tunnel, batching is
+// worth several times the transfer rate.
+const batchSize = 128
+
+func (d *netTun) BatchSize() int { return batchSize }
 
 // Read hands wireguard-go the next packet the stack wants to send.
 //
 // Blocking is correct: wireguard-go calls this from its own goroutine and
 // expects it to wait. Returning an error is how the loop is told to stop.
 func (d *netTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+	// Blocking for the first, then taking whatever else is already queued.
+	// Waiting for a full batch would trade throughput for latency on exactly
+	// the traffic — a click, a keystroke — where latency is what is noticed.
 	pkt := d.ep.ReadContext(d.readContext())
 	if pkt == nil {
 		return 0, os.ErrClosed
 	}
-	defer pkt.DecRef()
 
-	view := pkt.ToView()
-	n, err := view.Read(bufs[0][offset:])
-	if err != nil {
-		return 0, err
+	count := 0
+	for {
+		size, err := pkt.ToView().Read(bufs[count][offset:])
+		pkt.DecRef()
+		if err != nil {
+			return count, err
+		}
+		sizes[count] = size
+		count++
+
+		if count == len(bufs) {
+			break
+		}
+		if pkt = d.ep.Read(); pkt == nil {
+			break
+		}
 	}
-	sizes[0] = n
-	return 1, nil
+	return count, nil
 }
 
 // Write injects packets that arrived from the server into the stack.

@@ -24,6 +24,12 @@ import (
 type tunnelDialer struct {
 	stack *stack.Stack
 
+	// Which families the tunnel actually carries, from the addresses the
+	// configuration gave the interface. A config with only an IPv4 address
+	// cannot route IPv6 no matter what a name resolves to.
+	hasV4 bool
+	hasV6 bool
+
 	// Resolver is deliberately built on top of this same dialer, so name
 	// lookups go through the tunnel too. A SOCKS proxy that tunnels the
 	// connection but resolves the name locally leaks every site visited to
@@ -31,8 +37,15 @@ type tunnelDialer struct {
 	resolver *net.Resolver
 }
 
-func newTunnelDialer(s *stack.Stack, dnsServers []netip.Addr) *tunnelDialer {
+func newTunnelDialer(s *stack.Stack, local, dnsServers []netip.Addr) *tunnelDialer {
 	d := &tunnelDialer{stack: s}
+	for _, addr := range local {
+		if addr.Is4() {
+			d.hasV4 = true
+		} else {
+			d.hasV6 = true
+		}
+	}
 
 	d.resolver = &net.Resolver{
 		// PreferGo is what makes the Dial below actually used. Without it Go
@@ -85,9 +98,57 @@ func (d *tunnelDialer) dialDNS(ctx context.Context, network string, server netip
 	}
 }
 
-// DialTCP opens a TCP connection to a literal address through the tunnel.
-func (d *tunnelDialer) DialTCP(ctx context.Context, addr netip.Addr, port uint16) (net.Conn, error) {
-	return gonet.DialContextTCP(ctx, d.stack, fullAddr(addr, port), protoFor(addr))
+// DialTCP connects to the first of addrs that answers, and reports which.
+//
+// Every address is tried, not just the first. Most sites resolve to both an
+// IPv4 and an IPv6 address, the order they come back in is not guaranteed, and
+// a tunnel configured with only one family cannot reach the other — so taking
+// whichever came first would leave sites failing to load for a reason nothing
+// on screen could explain.
+func (d *tunnelDialer) DialTCP(ctx context.Context, addrs []netip.Addr, port uint16) (net.Conn, netip.Addr, error) {
+	ordered := d.reachable(addrs)
+	if len(ordered) == 0 {
+		return nil, netip.Addr{}, fmt.Errorf("no address the tunnel can reach")
+	}
+
+	var lastErr error
+	for _, addr := range ordered {
+		conn, err := gonet.DialContextTCP(ctx, d.stack, fullAddr(addr, port), protoFor(addr))
+		if err == nil {
+			return conn, addr, nil
+		}
+		lastErr = err
+
+		// A cancelled context means the browser gave up or the deadline
+		// passed; working through the rest of the list would only make it
+		// wait longer for the same answer.
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, netip.Addr{}, lastErr
+}
+
+// reachable drops the addresses whose family the tunnel does not carry.
+//
+// Dropped rather than ordered last: with no IPv6 address on the interface the
+// stack has no source to send from, so those attempts cannot succeed and would
+// only spend the browser's patience before the ones that can.
+//
+// If that leaves nothing — a tunnel with no IPv4 address and a name with only
+// an A record — the whole list is kept and allowed to fail honestly, because
+// refusing to try at all would report the same thing with less information.
+func (d *tunnelDialer) reachable(addrs []netip.Addr) []netip.Addr {
+	usable := make([]netip.Addr, 0, len(addrs))
+	for _, addr := range addrs {
+		if (addr.Is4() && d.hasV4) || (!addr.Is4() && d.hasV6) {
+			usable = append(usable, addr)
+		}
+	}
+	if len(usable) == 0 {
+		return addrs
+	}
+	return usable
 }
 
 // Resolve turns a hostname into addresses, over the tunnel.

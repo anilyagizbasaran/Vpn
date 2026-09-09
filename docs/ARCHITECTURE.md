@@ -310,6 +310,7 @@ We test the real paths, not mocked copies of them:
 | Key derivation | **RFC 7748 §6.1 test vectors** — not self-consistency |
 | Native messaging | A stdio round trip with real framing |
 | The browser-only helper | A real child process, compiled by the test, spawned and killed |
+| The userspace stack | Packets queued on the real endpoint; batching and window size asserted |
 
 Why key derivation is pinned to vectors: a wrong derivation produces a tunnel
 that never handshakes and never reports an error. A self-consistent test misses

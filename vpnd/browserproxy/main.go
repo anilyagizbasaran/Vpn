@@ -86,7 +86,7 @@ func run(log *slog.Logger) error {
 	}
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	dialer := newTunnelDialer(tunnel.Stack(), cfg.DNS)
+	dialer := newTunnelDialer(tunnel.Stack(), cfg.Addresses, cfg.DNS)
 	server := newSocksServer(dialer, listener, func(msg string, args ...any) {
 		log.Warn(msg, args...)
 	})

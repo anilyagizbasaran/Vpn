@@ -56,7 +56,10 @@ type socksServer struct {
 // that guarantees there is no other way out: the server has no access to
 // net.Dial, so it cannot accidentally reach the internet directly.
 type dialer interface {
-	DialTCP(ctx context.Context, addr netip.Addr, port uint16) (net.Conn, error)
+	// DialTCP connects to whichever of addrs answers, and reports which one
+	// did — a list rather than one address because a name usually has several
+	// and only some of them are reachable through a given tunnel.
+	DialTCP(ctx context.Context, addrs []netip.Addr, port uint16) (net.Conn, netip.Addr, error)
 	Resolve(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
@@ -119,7 +122,7 @@ func (s *socksServer) handle(client net.Conn) error {
 		return err
 	}
 
-	target, err := s.resolve(host)
+	targets, err := s.resolve(host)
 	if err != nil {
 		_ = writeReply(client, replyHostUnreachable, netip.Addr{}, 0)
 		return fmt.Errorf("resolve: %w", err)
@@ -128,7 +131,7 @@ func (s *socksServer) handle(client net.Conn) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	remote, err := s.dialer.DialTCP(ctx, target, port)
+	remote, target, err := s.dialer.DialTCP(ctx, targets, port)
 	if err != nil {
 		_ = writeReply(client, replyHostUnreachable, netip.Addr{}, 0)
 		return fmt.Errorf("dial: %w", err)
@@ -238,19 +241,15 @@ func readRequest(client net.Conn) (host string, port uint16, err error) {
 
 // resolve turns whatever the browser asked for into one address, over the
 // tunnel when it is a name.
-func (s *socksServer) resolve(host string) (netip.Addr, error) {
+func (s *socksServer) resolve(host string) ([]netip.Addr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return addr.Unmap(), nil
+		return []netip.Addr{addr.Unmap()}, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	addrs, err := s.dialer.Resolve(ctx, host)
-	if err != nil {
-		return netip.Addr{}, err
-	}
-	return addrs[0], nil
+	return s.dialer.Resolve(ctx, host)
 }
 
 func writeReply(client net.Conn, code byte, bound netip.Addr, port uint16) error {

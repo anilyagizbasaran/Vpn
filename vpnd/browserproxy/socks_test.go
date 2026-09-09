@@ -18,9 +18,20 @@ type fakeDialer struct {
 	resolved []string
 	dialed   []string
 
+	// offered is every address DialTCP was handed, in order, so a test can
+	// assert that the whole answer reached the dialler rather than only its
+	// first entry.
+	offered []netip.Addr
+
 	resolveTo  netip.Addr
+	resolveAll []netip.Addr
 	resolveErr error
-	dialErr    error
+
+	// dialErr fails every attempt; refuse fails only the addresses in it, so
+	// a test can make the first choice unreachable and watch the second be
+	// tried.
+	dialErr error
+	refuse  map[netip.Addr]bool
 
 	// server is handed back as the far end of every dial, so a test can watch
 	// bytes arrive.
@@ -32,15 +43,25 @@ func (f *fakeDialer) Resolve(_ context.Context, host string) ([]netip.Addr, erro
 	if f.resolveErr != nil {
 		return nil, f.resolveErr
 	}
+	if len(f.resolveAll) > 0 {
+		return f.resolveAll, nil
+	}
 	return []netip.Addr{f.resolveTo}, nil
 }
 
-func (f *fakeDialer) DialTCP(_ context.Context, addr netip.Addr, port uint16) (net.Conn, error) {
-	f.dialed = append(f.dialed, netip.AddrPortFrom(addr, port).String())
+func (f *fakeDialer) DialTCP(_ context.Context, addrs []netip.Addr, port uint16) (net.Conn, netip.Addr, error) {
+	f.offered = append(f.offered, addrs...)
 	if f.dialErr != nil {
-		return nil, f.dialErr
+		return nil, netip.Addr{}, f.dialErr
 	}
-	return f.server, nil
+	for _, addr := range addrs {
+		if f.refuse[addr] {
+			continue
+		}
+		f.dialed = append(f.dialed, netip.AddrPortFrom(addr, port).String())
+		return f.server, addr, nil
+	}
+	return nil, netip.Addr{}, errors.New("no address answered")
 }
 
 // newTestServer runs one SOCKS server over an in-memory pipe pair.
@@ -257,5 +278,49 @@ func TestNonSocksTrafficIsRefused(t *testing.T) {
 	n, err := client.Read(buf)
 	if err == nil && n > 0 {
 		t.Fatalf("the proxy answered non-SOCKS traffic with %q", buf[:n])
+	}
+}
+
+func TestEveryResolvedAddressIsOffered(t *testing.T) {
+	// A name usually has both an A and an AAAA record, and the order they come
+	// back in is not guaranteed. Handing the dialler only the first would make
+	// a site fail to load whenever the tunnel could not carry that family —
+	// with nothing on screen able to explain why.
+	far, _ := net.Pipe()
+	v6 := netip.MustParseAddr("2001:db8::1")
+	v4 := netip.MustParseAddr("203.0.113.7")
+	d := &fakeDialer{resolveAll: []netip.Addr{v6, v4}, server: far}
+
+	client := newTestServer(t, d)
+	greet(t, client)
+	connectDomain(t, client, "example.com", 443)
+
+	if code := readReply(t, client); code != replySuccess {
+		t.Fatalf("reply code %d", code)
+	}
+	if len(d.offered) != 2 || d.offered[0] != v6 || d.offered[1] != v4 {
+		t.Fatalf("the dialler was offered %v, want both addresses in order", d.offered)
+	}
+}
+
+func TestAnUnreachableFirstAddressDoesNotSinkTheConnection(t *testing.T) {
+	far, _ := net.Pipe()
+	v6 := netip.MustParseAddr("2001:db8::1")
+	v4 := netip.MustParseAddr("203.0.113.7")
+	d := &fakeDialer{
+		resolveAll: []netip.Addr{v6, v4},
+		refuse:     map[netip.Addr]bool{v6: true},
+		server:     far,
+	}
+
+	client := newTestServer(t, d)
+	greet(t, client)
+	connectDomain(t, client, "example.com", 443)
+
+	if code := readReply(t, client); code != replySuccess {
+		t.Fatalf("reply code %d, want the second address to have been tried", code)
+	}
+	if len(d.dialed) != 1 || d.dialed[0] != "203.0.113.7:443" {
+		t.Fatalf("dialed %v", d.dialed)
 	}
 }

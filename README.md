@@ -105,6 +105,12 @@ Both the desktop app and the extension can switch between them, and the daemon
 refuses to run both at once: two tunnels to the same peer would be two paths
 for the same traffic with nothing able to say which one carried a request.
 
+The trade is speed. Terminating WireGuard in userspace costs several times what
+the kernel does: measured against the live server, browser-only carries roughly
+2–7 MB/s where the whole-computer tunnel manages about 6. It is the mode to
+pick when you want one browser private and the rest of the machine untouched,
+not the one to pick for a large download.
+
 Two details make browser-only mode private rather than merely proxied. Names
 are resolved *inside* the tunnel — Chrome is configured with the `socks5`
 scheme, which sends hostnames to the proxy, and the proxy resolves them through
@@ -372,7 +378,7 @@ for a 429 never gets to parse 32 KB of JSON first.
 | Desktop daemon | Done | **Real tunnel, end to end**; Windows service start is broken (below) |
 | Desktop GUI | Code done | Build unverified — needs the Visual Studio C++ workload |
 | Browser extension | Done | Native host verified against a real daemon; toggles a live tunnel |
-| Browser-only mode | Code done | 46 tests including real spawn/stop cycles; not yet run against a live server |
+| Browser-only mode | Done | **Verified against the live server**: Chrome exits from the VPS, the terminal from the real address, DNS inside the tunnel |
 | Docker | Done | Site and API from one origin; `compose up` healthy |
 | Website | Code done | The download grid stays empty until a release is published |
 | CI | Done | Five jobs green, including a start-and-health-check of the API image |

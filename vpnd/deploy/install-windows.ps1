@@ -11,7 +11,13 @@
     service, so it is granted deliberately and narrowly rather than inherited.
 
 .EXAMPLE
-    .\install-windows.ps1 -BinaryPath C:\dev\Vpn\vpnd\bin\vpnd.exe
+    .\install-windows.ps1 -BinaryPath .\vpnd.exe
+
+.EXAMPLE
+    Registering the browser bridge as well. The ID comes from
+    chrome://extensions once the extension is loaded.
+
+    .\install-windows.ps1 -BinaryPath .\vpnd.exe -ExtensionId abcdefghijklmnop
 #>
 [CmdletBinding()]
 param(
@@ -22,7 +28,15 @@ param(
     # Who may drive the tunnel. Defaults to the interactive user running this
     # script, not the Users group: on a shared machine every account would
     # otherwise be able to turn the VPN on and off.
-    [string] $AllowedPrincipal = "$env:USERDOMAIN\$env:USERNAME"
+    [string] $AllowedPrincipal = "$env:USERDOMAIN\$env:USERNAME",
+    # The Chrome extension allowed to reach the daemon through the native
+    # messaging bridge. Without it the bridge is not registered at all and the
+    # extension cannot talk to the service, whatever else is installed.
+    #
+    # Deliberately without a default: this ID *is* the access control on that
+    # bridge, and a default would be a machine-wide hole for whoever used it
+    # first.
+    [string] $ExtensionId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,6 +102,45 @@ foreach ($name in 'vpnctl.exe', 'vpn-browser-host.exe', 'vpn-browser-proxy.exe')
 }
 Write-Host "    $($installed -join ', ')"
 
+
+# The bridge Chrome uses to reach the service.
+#
+# Registered under HKLM rather than HKCU: this script runs elevated, so HKCU is
+# the administrator's hive and not the hive of whoever will actually use the
+# browser. Chrome reads both, and an installer that needs admin anyway should
+# write the one that works for every account on the machine.
+#
+# Skipped when no extension ID is given, because that ID is the access control:
+# allowed_origins is what stops anything else on the machine from starting the
+# host and driving the daemon through it.
+if ($ExtensionId) {
+    Write-Host '==> Registering the browser bridge'
+
+    $hostManifest = Join-Path $InstallDir 'com.example.vpn_client.json'
+    $bridge = [ordered]@{
+        name            = 'com.example.vpn_client'
+        description     = 'Bridges the VPN Client extension to the local vpnd service'
+        path            = (Join-Path $InstallDir 'vpn-browser-host.exe')
+        type            = 'stdio'
+        allowed_origins = @("chrome-extension://$ExtensionId/")
+    }
+    $bridge | ConvertTo-Json | Set-Content -Path $hostManifest -Encoding utf8
+
+    foreach ($browser in 'Google\Chrome', 'Microsoft\Edge', 'Chromium') {
+        $key = "HKLM:\SOFTWARE\$browser\NativeMessagingHosts\com.example.vpn_client"
+        New-Item -Path $key -Force | Out-Null
+        Set-ItemProperty -Path $key -Name '(default)' -Value $hostManifest
+    }
+    Write-Host "    $hostManifest"
+} else {
+    Write-Warning @'
+The browser bridge was not registered: no -ExtensionId was given.
+
+The extension cannot reach the service without it. Load the extension in
+Chrome, copy its ID from chrome://extensions, and run this script again
+with -ExtensionId <id>.
+'@
+}
 
 Write-Host '==> Preparing the data directory'
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null

@@ -61,16 +61,23 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $target = Join-Path $InstallDir 'vpnd.exe'
 Copy-Item $BinaryPath $target -Force
 
-# The binaries that travel with the daemon. vpnctl because the line this
-# script prints at the end tells you to run it, and vpn-browser-proxy because
-# vpnd starts it by name from its own directory when browser-only mode is
-# switched on — a missing one is a feature that fails at the button rather
-# than here.
+# The binaries that travel with the daemon:
+#
+#   vpnctl              the line this script prints at the end tells you to run it
+#   vpn-browser-host    what the browser extension talks to; the extension's
+#                       native-messaging manifest points at this path, so an
+#                       old copy left here is an extension that cannot drive
+#                       anything added since
+#   vpn-browser-proxy   vpnd starts it by name from its own directory when
+#                       browser-only mode is switched on
+#
+# A missing or stale one is a feature that fails at the button rather than
+# here. check-install.py asserts this list against what the release builds.
 #
 # Taken from beside the binary given, which is where both a go build and the
 # release archive put them.
 $installed = @('vpnd.exe')
-foreach ($name in 'vpnctl.exe', 'vpn-browser-proxy.exe') {
+foreach ($name in 'vpnctl.exe', 'vpn-browser-host.exe', 'vpn-browser-proxy.exe') {
     $source = Join-Path (Split-Path $BinaryPath) $name
     if (Test-Path $source) {
         Copy-Item $source (Join-Path $InstallDir $name) -Force

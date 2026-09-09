@@ -81,6 +81,13 @@ jobs:
             exit 1
           fi
 
+      # A binary added to the release and not to install-windows.ps1 installs
+      # cleanly as whatever old copy is already there. That is how the browser
+      # extension ended up driving a build four weeks older than the daemon.
+      - name: The installer installs every released binary
+        working-directory: .
+        run: python3 vpnd/deploy/check-install.py
+
       - name: Browser-only tunnel
         working-directory: vpnd/browserproxy
         run: |

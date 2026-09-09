@@ -124,6 +124,17 @@ func (m *Manager) ForgetConfig() {
 	m.lastServer = ""
 }
 
+// LastConfig returns the config held for [Reconnect], and the server address
+// it names. Empty when nothing is held.
+//
+// Browser-only mode needs the configuration without bringing an interface up,
+// so it reads it rather than calling [Reconnect].
+func (m *Manager) LastConfig() (string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastConfig, m.lastServer
+}
+
 // CanReconnect reports whether a config is held for [Reconnect].
 func (m *Manager) CanReconnect() bool {
 	m.mu.Lock()

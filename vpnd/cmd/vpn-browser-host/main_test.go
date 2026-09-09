@@ -42,17 +42,34 @@ func decodeReplies(t *testing.T, raw []byte) []reply {
 
 // The extension is the least trusted client in the system, so what it is
 // allowed to ask for is asserted rather than assumed.
-func TestOnlyThreeActionsAreExposed(t *testing.T) {
+func TestOnlyTheSafeActionsAreExposed(t *testing.T) {
 	allowed := map[string]string{
 		"status":     "status",
 		"connect":    "reconnect",
 		"disconnect": "down",
+		"enroll":     "enroll",
+		// Browser-only mode. Allowed for the same reason `connect` is: a verb
+		// goes out and a loopback port comes back, and no configuration
+		// crosses the pipe in either direction.
+		"browser-only-on":  "start_browser_only",
+		"browser-only-off": "stop_browser_only",
 	}
 
 	for action, want := range allowed {
 		got, ok := methodFor(action)
 		if !ok || got != want {
 			t.Fatalf("methodFor(%q) = %q, %v; want %q", action, got, ok, want)
+		}
+	}
+
+	// The list is closed, not just correct: something added to the daemon and
+	// wired through here by habit should fail this rather than ship.
+	for _, action := range []string{
+		"identity", "forget", "up", "subscribe", "version",
+		"start_browser_only", "stop_browser_only", "",
+	} {
+		if _, ok := methodFor(action); ok {
+			t.Fatalf("action %q is reachable from the browser", action)
 		}
 	}
 }

@@ -30,6 +30,13 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWith(t, nil)
+}
+
+// newHarnessWith lets a test configure the server before it starts reading.
+// Done here rather than after Serve so nothing races with the first request.
+func newHarnessWith(t *testing.T, configure func(*Server)) *harness {
+	t.Helper()
 
 	serverConn, clientConn := net.Pipe()
 	driver := &tunnel.MockDriver{}
@@ -41,6 +48,9 @@ func newHarness(t *testing.T) *harness {
 	// key, and a test that wrote one into /etc/wireguard would be a surprise.
 	server := NewServer(manager, enroll.NewStore(t.TempDir()), log)
 	server.newClient = func(string) enroller { return &stubEnroller{} }
+	if configure != nil {
+		configure(server)
+	}
 	go server.handle(ctx, serverConn)
 
 	h := &harness{

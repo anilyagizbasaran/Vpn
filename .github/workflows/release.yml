@@ -53,6 +53,13 @@ jobs:
               -o "dist/$cmd${{ matrix.ext }}" "./cmd/$cmd"
           done
 
+          # The browser-only tunnel, from its own module. Separate because it
+          # carries a userspace network stack and eighty-odd dependencies that
+          # have no business inside a process running as root — vpnd starts it
+          # unprivileged and hands it a config on stdin.
+          (cd browserproxy && go build -trimpath -ldflags "-s -w" \
+            -o "../dist/vpn-browser-proxy${{ matrix.ext }}" .)
+
       - name: Package
         working-directory: vpnd
         run: |

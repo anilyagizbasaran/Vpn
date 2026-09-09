@@ -48,6 +48,13 @@ type reply struct {
 	// setup form on this rather than on a failed connect, so a first run does
 	// not start with an error message.
 	Enrolled bool `json:"enrolled"`
+
+	// Where the browser-only proxy is listening, when it is. The extension
+	// points itself at exactly this and nothing else: a host it invented
+	// itself is how a proxy ends up on something other than loopback.
+	BrowserOnly bool   `json:"browserOnly"`
+	SocksHost   string `json:"socksHost,omitempty"`
+	SocksPort   int    `json:"socksPort,omitempty"`
 }
 
 func main() {
@@ -133,7 +140,14 @@ func handle(req request, socketPath string) reply {
 
 	var status protocol.StatusResult
 	_ = json.Unmarshal(response.Result, &status)
-	return reply{OK: true, Stage: string(status.Stage), Enrolled: status.Enrolled}
+	return reply{
+		OK:          true,
+		Stage:       string(status.Stage),
+		Enrolled:    status.Enrolled,
+		BrowserOnly: status.BrowserOnly,
+		SocksHost:   status.SocksHost,
+		SocksPort:   status.SocksPort,
+	}
 }
 
 // methodFor is an allowlist, not a pass-through. `up` is absent on purpose:
@@ -154,6 +168,13 @@ func methodFor(action string) (string, bool) {
 		return protocol.MethodDown, true
 	case "enroll":
 		return protocol.MethodEnroll, true
+	// The two the extension needs to tunnel itself. Safe for the same reason
+	// `connect` is: no configuration crosses this pipe, only a verb, and what
+	// comes back is a loopback port number.
+	case "browser-only-on":
+		return protocol.MethodStartBrowserOnly, true
+	case "browser-only-off":
+		return protocol.MethodStopBrowserOnly, true
 	default:
 		return "", false
 	}

@@ -59,6 +59,24 @@ const (
 	// Also absent from the browser host's allowlist: it is destructive, it is
 	// machine-wide, and undoing it costs an invite code.
 	MethodForget = "forget"
+
+	// MethodStartBrowserOnly tunnels one browser and nothing else.
+	//
+	// No interface is created and no route is changed. The daemon starts a
+	// helper that terminates WireGuard in userspace and offers a SOCKS5
+	// listener on loopback; the browser is pointed at it. Every other program
+	// on the machine keeps its ordinary connection, which is the entire point
+	// — the user wanted a private browser, not a private computer.
+	//
+	// Answers with a [StatusResult] naming the loopback proxy. Mutually
+	// exclusive with the system-wide tunnel: two tunnels to the same peer would be two paths for
+	// the same traffic and no way to say which one carried it.
+	MethodStartBrowserOnly = "start_browser_only"
+
+	// MethodStopBrowserOnly ends it. Safe to call when nothing is running,
+	// because the caller that most needs it — a browser extension being
+	// disabled — cannot know whether it is.
+	MethodStopBrowserOnly = "stop_browser_only"
 )
 
 // Stage mirrors the client's TunnelStage vocabulary so the GUI can map one to
@@ -142,6 +160,21 @@ type StatusResult struct {
 	// opens, rather than making the user press Connect to discover there is
 	// nothing to connect to.
 	Enrolled bool `json:"enrolled"`
+
+	// Whether the browser-only tunnel is running, and where it listens.
+	//
+	// Reported separately from Stage because the two are independent: the
+	// stage above describes the system-wide interface, which in browser-only
+	// mode is deliberately doing nothing at all.
+	//
+	// The port is chosen by the operating system rather than fixed, so nothing
+	// can assume the proxy is at a well-known place. The host is sent as well,
+	// always loopback, so a caller configures the browser from what the daemon
+	// said rather than from a constant of its own — which is how a proxy ends
+	// up advertised on a real interface.
+	BrowserOnly bool   `json:"browserOnly"`
+	SocksHost   string `json:"socksHost,omitempty"`
+	SocksPort   int    `json:"socksPort,omitempty"`
 }
 
 // IdentityResult answers [MethodIdentity]. No key material: see the method.

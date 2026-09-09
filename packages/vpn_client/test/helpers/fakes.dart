@@ -212,6 +212,36 @@ class FakeTunnel implements Tunnel {
   Future<void> dispose() => _stages.close();
 }
 
+/// Stands in for the daemon's browser-only tunnel.
+class FakeBrowserTunnel implements BrowserTunnel {
+  BrowserTunnelState state_ = BrowserTunnelState.off;
+
+  int startCalls = 0;
+  int stopCalls = 0;
+  int port = 49152;
+
+  /// Set to make [start] fail — what the daemon does when the system-wide
+  /// tunnel is already up.
+  Object? startError;
+
+  @override
+  Future<BrowserTunnelState> state() async => state_;
+
+  @override
+  Future<BrowserTunnelState> start() async {
+    startCalls += 1;
+    if (startError != null) throw startError!;
+    state_ = BrowserTunnelState(running: true, host: '127.0.0.1', port: port);
+    return state_;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls += 1;
+    state_ = BrowserTunnelState.off;
+  }
+}
+
 /// Stands in for vpnd: something on this machine that already holds, or can
 /// obtain, the one identity every client here shares.
 class FakeMachine implements MachineEnrolment {

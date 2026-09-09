@@ -58,6 +58,21 @@ const WEBRTC_POLICY = {
   strict: 'disable_non_proxied_udp',
 };
 
+/**
+ * The policy to actually apply, given the setting and whether the browser is
+ * tunnelling itself.
+ *
+ * Browser-only mode overrides the preference. The tunnel it uses is a SOCKS5
+ * proxy, and SOCKS5 carries TCP: any UDP WebRTC opens would go straight out of
+ * the real adapter, from the real address, while the tab it belongs to looked
+ * private. `disable_non_proxied_udp` is the only setting that closes that, so
+ * in this mode it is not optional.
+ */
+function effectiveWebRtc(mode, browserOnly) {
+  if (browserOnly) return 'strict';
+  return mode;
+}
+
 async function applyWebRtc(mode) {
   const setting = chrome.privacy?.network?.webRTCIPHandlingPolicy;
   if (!setting) return;
@@ -205,6 +220,95 @@ async function applyRulesets(settings) {
 }
 
 // ---------------------------------------------------------------------------
+// Browser-only mode
+//
+// The daemon runs a WireGuard tunnel in userspace and offers it as a SOCKS5
+// proxy on loopback. Nothing system-wide changes — no interface, no route —
+// and pointing Chrome at that proxy is what makes this browser, and only this
+// browser, come out of the VPN.
+//
+// The scheme matters. Chrome resolves names at the *proxy* for socks5, and
+// locally for socks4: with the wrong one every site visited would be sent to
+// the local network's DNS in the clear while the pages themselves loaded
+// privately. socks5 is the whole reason the proxy implements domain
+// addresses at all.
+// ---------------------------------------------------------------------------
+
+// Only loopback. A bypass list is a hole in the tunnel by construction, so it
+// holds the addresses that cannot leave this machine and nothing else.
+const PROXY_BYPASS = ['localhost', '127.0.0.1', '[::1]'];
+
+function proxyConfig(host, port) {
+  return {
+    mode: 'fixed_servers',
+    rules: {
+      singleProxy: { scheme: 'socks5', host, port },
+      bypassList: PROXY_BYPASS,
+    },
+  };
+}
+
+async function applyProxy(host, port) {
+  const settings = chrome.proxy?.settings;
+  if (!settings) throw new Error('This browser does not allow proxy settings to be changed.');
+
+  const current = await settings.get({});
+  if (current.levelOfControl === 'controlled_by_other_extensions' ||
+      current.levelOfControl === 'not_controllable') {
+    // Failing loudly. Setting it and having it silently not take effect would
+    // leave the popup saying the browser is tunnelled while it is not.
+    throw new Error('Another extension or a policy controls the proxy settings.');
+  }
+
+  await settings.set({ scope: 'regular', value: proxyConfig(host, port) });
+  await chrome.storage.session.set({ appliedProxy: `${host}:${port}` });
+}
+
+async function clearProxy() {
+  const settings = chrome.proxy?.settings;
+  if (!settings) return;
+  try {
+    await settings.clear({ scope: 'regular' });
+  } finally {
+    await chrome.storage.session.remove('appliedProxy');
+  }
+}
+
+/**
+ * Keeps Chrome's proxy setting in step with what the daemon reports.
+ *
+ * The service worker is killed and restarted constantly, so the daemon is the
+ * only thing that knows whether the browser tunnel is running; this runs on
+ * every status refresh to make the browser agree with it.
+ *
+ * A daemon that cannot be reached leaves the proxy exactly as it is. Clearing
+ * it would send the next request out of the real adapter the moment the VPN
+ * app crashed, which is the leak this mode exists to prevent — so it fails
+ * closed, and the switch in the popup still turns it off by hand.
+ */
+async function reconcileProxy(reply) {
+  if (!reply.ok) return;
+
+  if (!reply.browserOnly || !reply.socksPort) {
+    // Cleared unconditionally, not only when this session remembers setting
+    // it. Chrome keeps the proxy setting across restarts and `appliedProxy`
+    // does not, so a browser reopened after browser-only mode was on would
+    // otherwise sit pointed at a port with nothing behind it, loading
+    // nothing, with no way back. Clearing what was never set is a no-op:
+    // an extension can only clear its own value.
+    await clearProxy();
+    return;
+  }
+
+  const host = reply.socksHost || '127.0.0.1';
+  const wanted = `${host}:${reply.socksPort}`;
+
+  const { appliedProxy } = await chrome.storage.session.get('appliedProxy');
+  if (appliedProxy === wanted) return;
+  await applyProxy(host, reply.socksPort);
+}
+
+// ---------------------------------------------------------------------------
 // Native host
 // ---------------------------------------------------------------------------
 
@@ -287,7 +391,18 @@ async function refreshBadge() {
 
   await trackConnectedSince(reply.ok ? reply.stage : null);
 
-  const { killSwitch } = await readSettings();
+  // Before the kill switch: if the browser tunnel went away while nothing was
+  // looking, the sooner the browser stops sending traffic to a dead proxy the
+  // better. Failures here are reported rather than thrown — the badge refresh
+  // runs on a timer and there is nobody to catch them.
+  try {
+    await reconcileProxy(reply);
+  } catch (error) {
+    console.warn('could not apply the proxy setting', error);
+  }
+
+  const { killSwitch, webrtc } = await readSettings();
+  await applyWebRtc(effectiveWebRtc(webrtc, reply.ok === true && reply.browserOnly === true));
   await applyKillSwitch({
     enabled: killSwitch,
     reachable: reply.ok === true,
@@ -315,6 +430,41 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const reply = await ask(message.type);
         // Refresh from the daemon rather than trusting the reply: the tunnel
         // may still be mid-transition.
+        await refreshBadge();
+        sendResponse(reply);
+        return;
+      }
+
+      case 'browser-only-on': {
+        const reply = await ask('browser-only-on');
+        if (!reply.ok) {
+          sendResponse(reply);
+          return;
+        }
+        try {
+          await applyProxy(reply.socksHost || '127.0.0.1', reply.socksPort);
+        } catch (error) {
+          // The daemon is now running a tunnel this browser is not using.
+          // Leaving it there would show "on" over an ordinary connection, so
+          // it goes back down and the failure is what the user sees.
+          await ask('browser-only-off');
+          await clearProxy();
+          await refreshBadge();
+          sendResponse({ ok: false, error: String(error.message ?? error) });
+          return;
+        }
+        await refreshBadge();
+        sendResponse(reply);
+        return;
+      }
+
+      case 'browser-only-off': {
+        // Cleared first, and whatever the daemon says. This is the way out
+        // when the VPN app has died with the proxy still set — the browser
+        // cannot load anything until it is cleared, and asking a daemon that
+        // is not there would make the button do nothing.
+        await clearProxy();
+        const reply = await ask('browser-only-off');
         await refreshBadge();
         sendResponse(reply);
         return;
@@ -364,11 +514,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         await chrome.storage.local.set({ [key]: value });
 
-        if (key === 'webrtc') await applyWebRtc(value);
         if (key in RULESETS) await applyRulesets(await readSettings());
         // Re-evaluating rather than toggling blindly: turning the kill switch
-        // on while already connected must not block anything.
-        if (key === 'killSwitch') await refreshBadge();
+        // on while already connected must not block anything, and the WebRTC
+        // preference does not win over what browser-only mode requires.
+        if (key === 'killSwitch' || key === 'webrtc') await refreshBadge();
 
         sendResponse({ ok: true });
         return;
@@ -391,8 +541,7 @@ async function start({ autoConnectAllowed }) {
   chrome.alarms.create(POLL_ALARM, { periodInMinutes: POLL_PERIOD_MINUTES });
 
   const settings = await readSettings();
-  const { webrtc, autoConnect } = settings;
-  await applyWebRtc(webrtc);
+  const { autoConnect } = settings;
   await applyRulesets(settings);
   // Dynamic rules survive a restart, but rebuilding from storage keeps the
   // two from drifting if one is ever cleared without the other.
@@ -400,11 +549,16 @@ async function start({ autoConnectAllowed }) {
 
   if (autoConnectAllowed && autoConnect) {
     const status = await ask('status');
-    // Only when the daemon answers and says it is down: a failed connect on a
-    // machine where the app has never run is noise, not a useful attempt.
-    if (status.ok && status.stage === 'disconnected') await ask('connect');
+    // Only when the daemon answers and says it is down, and not while the
+    // browser is tunnelling itself — the two modes exclude each other and the
+    // daemon would refuse anyway.
+    if (status.ok && status.stage === 'disconnected' && !status.browserOnly) {
+      await ask('connect');
+    }
   }
 
+  // Applies the WebRTC policy and puts the proxy setting back in step with
+  // whatever the daemon is actually running.
   await refreshBadge();
 }
 
@@ -419,6 +573,10 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command !== 'toggle-tunnel') return;
   const status = await ask('status');
   if (!status.ok || BUSY.has(status.stage)) return;
+  // The shortcut drives the system-wide tunnel. In browser-only mode the
+  // daemon would refuse it, so it does nothing rather than showing an error
+  // nobody asked for.
+  if (status.browserOnly) return;
   await ask(status.stage === 'connected' ? 'disconnect' : 'connect');
   await refreshBadge();
 });

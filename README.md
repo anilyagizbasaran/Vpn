@@ -89,14 +89,39 @@ client-side region selection are all in place, but one node is running. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for why each of these decisions
 went the way it did.
 
+### Two modes
+
+**Whole computer** is the ordinary one: an interface, a default route, every
+program on the machine going through the tunnel.
+
+**Browser only** creates no interface and changes no route. `ip route` and
+`wg show` look exactly as they did. Instead the daemon starts an unprivileged
+helper that terminates WireGuard in userspace and offers it as a SOCKS5 proxy
+on loopback, and the browser is pointed at that. The browser comes out of the
+VPN; everything else on the computer keeps its ordinary connection, which is
+the point — a private browser is not the same wish as a private computer.
+
+Both the desktop app and the extension can switch between them, and the daemon
+refuses to run both at once: two tunnels to the same peer would be two paths
+for the same traffic with nothing able to say which one carried a request.
+
+Two details make browser-only mode private rather than merely proxied. Names
+are resolved *inside* the tunnel — Chrome is configured with the `socks5`
+scheme, which sends hostnames to the proxy, and the proxy resolves them through
+the tunnel's own DNS — so the local network never sees a lookup. And WebRTC is
+forced to `disable_non_proxied_udp` while the mode is on, because SOCKS5
+carries TCP and any UDP WebRTC opened would leave from the real adapter.
+
 ### What the extension is for
 
-It cannot open a tunnel — no browser extension can — so it shows the desktop
-app's tunnel and toggles it. That would not be worth installing on its own.
-What makes it worth having is the leak the tunnel **cannot** close:
+It cannot open a tunnel on its own — no browser extension can — so it drives
+the daemon's. What makes it worth installing is the part the tunnel **cannot**
+do by itself:
 
 - **WebRTC.** It hands page JavaScript the real adapter address, whatever the
   tunnel is doing. Only the browser can stop that, and it is on by default here.
+- **Browser-only mode**, which needs the browser's own proxy settings and so
+  can only be finished from inside it.
 - **A kill switch** that blocks browsing while the tunnel is down.
 - **Ad and tracker blocking** — 77 third-party domains in two toggleable lists,
   with a per-site exemption for the pages that break without them.
@@ -113,6 +138,7 @@ server/            Control plane — Node + Express + TypeScript (127 tests)
   deploy/          systemd unit, Caddyfile, Dockerfile
 vpnd/              Desktop service and node agent — Go
   cmd/             vpnd · vpnctl · vpn-browser-host · vpn-node-agent
+  browserproxy/    Browser-only tunnel — its own module, its own binary
 packages/          Shared Dart layers (90 tests)
   vpn_crypto/          L0  X25519, one dependency: package:cryptography
   vpn_api/             L1  HTTP + models (no Flutter, no dart:io)
@@ -346,6 +372,7 @@ for a 429 never gets to parse 32 KB of JSON first.
 | Desktop daemon | Done | **Real tunnel, end to end**; Windows service start is broken (below) |
 | Desktop GUI | Code done | Build unverified — needs the Visual Studio C++ workload |
 | Browser extension | Done | Native host verified against a real daemon; toggles a live tunnel |
+| Browser-only mode | Code done | 46 tests including real spawn/stop cycles; not yet run against a live server |
 | Docker | Done | Site and API from one origin; `compose up` healthy |
 | Website | Code done | The download grid stays empty until a release is published |
 | CI | Done | Five jobs green, including a start-and-health-check of the API image |

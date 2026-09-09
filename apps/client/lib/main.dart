@@ -41,11 +41,15 @@ Future<void> main() async {
   // their own Settings screen and never run this app.
   final Tunnel tunnel;
   MachineEnrolment? machine;
+  BrowserTunnel? browserTunnel;
   if (AppConfig.hasDesktopTunnel) {
     tunnel = DesktopTunnel();
     // The daemon owns this computer's identity, so the app and the browser
     // extension are one device rather than two — whichever set it up first.
     machine = DaemonEnrolment();
+    // Browser-only mode. Left null anywhere else, and the app then does not
+    // offer the choice rather than offering one that fails when taken.
+    browserTunnel = DaemonBrowserTunnel();
   } else {
     tunnel = UnsupportedTunnel(AppConfig.deviceLabel);
   }
@@ -57,6 +61,7 @@ Future<void> main() async {
     devices: DeviceRepository(api: api),
     store: store,
     tunnel: tunnel,
+    browserTunnel: browserTunnel,
     keyRotationInterval: AppConfig.keyRotationInterval,
   );
 

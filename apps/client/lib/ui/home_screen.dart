@@ -91,13 +91,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _PowerButton(
-                        connected: vpn.isConnected,
+                        connected: vpn.isActive,
                         busy: vpn.isBusy,
                         failed: vpn.stage == TunnelStage.failed,
                         onPressed: vpn.isBusy ? null : vpn.toggle,
                       ),
                       const SizedBox(height: 26),
                       _StatusLine(vpn: vpn),
+                      if (vpn.supportsBrowserOnly) ...[
+                        const SizedBox(height: 22),
+                        _ModeSwitch(vpn: vpn),
+                      ],
                     ],
                   ),
                 ),
@@ -109,6 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 publicAddress: vpn.publicAddress,
                 checking: vpn.checkingAddress,
                 connected: vpn.isConnected,
+                browserProxy: vpn.browserTunnel.endpoint,
               ),
             ],
           ),
@@ -149,7 +154,8 @@ class _StatusLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final connected = vpn.isConnected;
+    final browserOnly = vpn.browserTunnel.running;
+    final connected = vpn.isActive;
 
     final Color colour;
     if (vpn.stage == TunnelStage.permissionDenied ||
@@ -175,7 +181,14 @@ class _StatusLine extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          connected
+          // Three states, not two. Saying "all traffic" in browser-only mode
+          // would be the one sentence on this screen that is actively false —
+          // everything except the browser is on the ordinary connection, on
+          // purpose, and the user chose that.
+          browserOnly
+              ? 'Your browser goes through the VPN. Nothing else on this '
+                    'computer does.'
+              : connected
               ? 'All traffic on this computer goes through the VPN.'
               : 'Your traffic is not protected.',
           textAlign: TextAlign.center,
@@ -184,6 +197,70 @@ class _StatusLine extends StatelessWidget {
             height: 1.4,
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// Chooses what the power button protects.
+///
+/// Locked while either tunnel is up, because the two exclude each other and
+/// the service refuses to run both. Switching silently would mean taking one
+/// down to start the other, with a gap in between that nobody asked for.
+class _ModeSwitch extends StatelessWidget {
+  const _ModeSwitch({required this.vpn});
+
+  final VpnController vpn;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final locked = vpn.isActive || vpn.isBusy;
+
+    return Column(
+      children: [
+        SegmentedButton<VpnMode>(
+          segments: const [
+            ButtonSegment(
+              value: VpnMode.system,
+              icon: Icon(Icons.computer_outlined, size: 18),
+              label: Text('Whole computer'),
+            ),
+            ButtonSegment(
+              value: VpnMode.browser,
+              icon: Icon(Icons.public_outlined, size: 18),
+              label: Text('Browser only'),
+            ),
+          ],
+          selected: {vpn.mode},
+          showSelectedIcon: false,
+          onSelectionChanged: locked
+              ? null
+              : (selection) => vpn.setMode(selection.first),
+          style: const ButtonStyle(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        if (locked) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Disconnect to change this.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ] else if (vpn.mode == VpnMode.browser) ...[
+          const SizedBox(height: 8),
+          Text(
+            'No network settings are changed. Only your browser is tunnelled.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.4,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -298,6 +375,7 @@ class _ConnectionCard extends StatelessWidget {
     required this.publicAddress,
     required this.checking,
     required this.connected,
+    required this.browserProxy,
   });
 
   final String serverAddress;
@@ -305,6 +383,9 @@ class _ConnectionCard extends StatelessWidget {
   final PublicAddress? publicAddress;
   final bool checking;
   final bool connected;
+
+  /// `host:port` while browser-only mode is on, otherwise null.
+  final String? browserProxy;
 
   @override
   Widget build(BuildContext context) {
@@ -327,12 +408,28 @@ class _ConnectionCard extends StatelessWidget {
             // the app already thinks it is in.
             _Row(
               icon: connected ? Icons.lock_outline : Icons.location_on_outlined,
-              label: connected ? 'VPN IP' : 'Your IP',
+              // In browser-only mode this address is measured by the app,
+              // which is not the browser and is not proxied. Labelling it
+              // "This computer" says so: the real address here alongside a
+              // tunnelled browser is the mode working, not failing.
+              label: browserProxy != null
+                  ? 'This computer'
+                  : connected
+                  ? 'VPN IP'
+                  : 'Your IP',
               value: checking && publicAddress == null
                   ? 'Checking...'
                   : (publicAddress?.ip ?? '—'),
               highlight: publicAddress?.throughTunnel ?? false,
             ),
+            if (browserProxy != null) ...[
+              const Divider(height: 1),
+              _Row(
+                icon: Icons.swap_horiz,
+                label: 'Browser proxy',
+                value: browserProxy!,
+              ),
+            ],
           ],
         ),
       ),

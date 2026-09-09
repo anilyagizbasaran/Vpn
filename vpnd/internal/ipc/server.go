@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 
+	"vpnd/internal/browser"
 	"vpnd/internal/enroll"
 	"vpnd/internal/protocol"
 	"vpnd/internal/tunnel"
@@ -23,6 +24,10 @@ type Server struct {
 	manager  *tunnel.Manager
 	identity *enroll.Store
 	log      *slog.Logger
+
+	// Runs the browser-only tunnel. nil when the daemon was started without
+	// it, in which case the two methods answer "unsupported".
+	browser *browser.Supervisor
 
 	// Swapped in tests. Everywhere else it builds a real HTTP client.
 	newClient func(baseURL string) enroller
@@ -194,10 +199,20 @@ func (s *Server) dispatch(ctx context.Context, request protocol.Request) (any, *
 			}
 		}
 
+		if apiErr := s.refuseWhileBrowserOnly(); apiErr != nil {
+			return nil, apiErr
+		}
+
 		if err := s.manager.Up(ctx, config, params.ServerAddress); err != nil {
 			return nil, asProtocolError(err)
 		}
 		return s.status(), nil
+
+	case protocol.MethodStartBrowserOnly:
+		return s.startBrowserOnly(ctx)
+
+	case protocol.MethodStopBrowserOnly:
+		return s.stopBrowserOnly()
 
 	case protocol.MethodIdentity:
 		return s.identityFor()
@@ -216,6 +231,10 @@ func (s *Server) dispatch(ctx context.Context, request protocol.Request) (any, *
 		return s.enrol(ctx, params)
 
 	case protocol.MethodReconnect:
+		if apiErr := s.refuseWhileBrowserOnly(); apiErr != nil {
+			return nil, apiErr
+		}
+
 		// No config in the request: the caller cannot produce one. The daemon
 		// reuses what it already accepted, and failing that, asks the control
 		// plane it enrolled with for a fresh copy.
@@ -237,6 +256,24 @@ func (s *Server) dispatch(ctx context.Context, request protocol.Request) (any, *
 			Code:    protocol.CodeBadRequest,
 			Message: "Unknown method: " + request.Method,
 		}
+	}
+}
+
+// refuseWhileBrowserOnly keeps the two modes from running at once.
+//
+// The invariant lives here rather than in the GUI so that it holds whatever is
+// calling: two tunnels to the same peer would be two paths for the same
+// traffic, and nothing on the machine could say which one carried a request.
+func (s *Server) refuseWhileBrowserOnly() *protocol.Error {
+	if s.browser == nil {
+		return nil
+	}
+	if _, running := s.browser.Running(); !running {
+		return nil
+	}
+	return &protocol.Error{
+		Code:    protocol.CodeBadRequest,
+		Message: "Browser-only mode is on. Turn it off first to route the whole computer.",
 	}
 }
 

@@ -7,6 +7,8 @@ const detailEl = document.getElementById('detail');
 const uptimeEl = document.getElementById('uptime');
 const toggle = document.getElementById('toggle');
 const errorEl = document.getElementById('error');
+const modesEl = document.getElementById('modes');
+const modeButtons = [...modesEl.querySelectorAll('.mode')];
 
 const webrtcEl = document.getElementById('webrtc');
 const webrtcHint = document.getElementById('webrtc-hint');
@@ -24,6 +26,39 @@ const siteNameEl = document.getElementById('site-name');
 
 /** The site in the tab the icon was clicked on, or null when there is none. */
 let currentSite = null;
+
+/**
+ * 'system' or 'browser'. What the button turns on, not what is running: what
+ * is running comes from the daemon on every refresh and overrides this.
+ */
+let mode = 'system';
+
+/** The two actions each mode drives, on and off. */
+const MODE_ACTIONS = {
+  system: { on: 'connect', off: 'disconnect' },
+  browser: { on: 'browser-only-on', off: 'browser-only-off' },
+};
+
+/**
+ * Every message this popup can send.
+ *
+ * Listed in one place because CI checks that the service worker has a case for
+ * each. A type with no handler answers nothing at all — no error, no console
+ * entry, both files parsing fine — and shows up only as a button that does not
+ * work. Some of these are sent through `toggle.dataset.action`, which no
+ * amount of grepping for `type:` would ever find.
+ */
+const MESSAGES = [
+  'status',
+  'connect',
+  'disconnect',
+  'browser-only-on',
+  'browser-only-off',
+  'enroll',
+  'get-settings',
+  'set-site-allowed',
+  'set-setting',
+];
 
 const LABELS = {
   connected: 'Connected',
@@ -49,6 +84,12 @@ function showSetup(show) {
 }
 
 function send(message) {
+  // Checked here so the list above cannot quietly go stale: a message type
+  // that is not on it fails loudly in development rather than silently in a
+  // release, and CI reads the same list.
+  if (!MESSAGES.includes(message?.type)) {
+    return Promise.resolve({ ok: false, error: `unknown message: ${message?.type}` });
+  }
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (reply) => {
       if (chrome.runtime.lastError) {
@@ -75,6 +116,22 @@ function showError(message) {
   errorEl.textContent = message ?? '';
 }
 
+/**
+ * Draws the mode switch and locks it while either tunnel is up.
+ *
+ * Locked rather than allowed-and-then-refused: the daemon will not run both,
+ * and a button that produces an error message is a worse way to say so than a
+ * button that is plainly not available yet.
+ */
+function renderModes(locked) {
+  modesEl.setAttribute('aria-disabled', String(locked));
+  for (const button of modeButtons) {
+    const selected = button.dataset.mode === mode;
+    button.setAttribute('aria-checked', String(selected));
+    button.disabled = locked;
+  }
+}
+
 function render(reply, connectedSince) {
   if (!reply.ok) {
     dot.dataset.state = 'failed';
@@ -87,25 +144,42 @@ function render(reply, connectedSince) {
     delete toggle.dataset.state;
     toggle.dataset.action = 'status';
     uptimeEl.hidden = true;
+    renderModes(false);
     showError(reply.error);
     return;
   }
 
   const stage = reply.stage ?? 'disconnected';
   const busy = BUSY.has(stage);
-  const connected = stage === 'connected';
+  const browserOnly = reply.browserOnly === true;
+  // Only ever one of the two, because the daemon refuses to run both.
+  const connected = browserOnly || stage === 'connected';
+
+  // What the daemon is actually running wins over what was clicked. A service
+  // worker restart, a second window, or the app itself can all have changed it
+  // since this popup last drew.
+  if (browserOnly) mode = 'browser';
+  else if (stage === 'connected' || busy) mode = 'system';
+  renderModes(connected || busy);
 
   dot.dataset.state = connected ? 'connected' : busy ? 'busy' : stage === 'failed' ? 'failed' : 'off';
-  stageEl.textContent = LABELS[stage] ?? stage;
-  detailEl.textContent = connected
-    ? 'Your traffic goes through the VPN'
-    : 'Traffic is not protected';
+  stageEl.textContent = browserOnly ? 'Browser connected' : (LABELS[stage] ?? stage);
+  if (browserOnly) {
+    detailEl.textContent = 'Only this browser goes through the VPN';
+  } else if (stage === 'connected') {
+    detailEl.textContent = 'Your traffic goes through the VPN';
+  } else {
+    detailEl.textContent = 'Traffic is not protected';
+  }
 
-  uptimeEl.hidden = !(connected && connectedSince);
-  if (connected && connectedSince) uptimeEl.textContent = formatDuration(connectedSince);
+  // The daemon times the system-wide tunnel; browser-only has no interface to
+  // time, so the duration is simply absent rather than wrong.
+  const timed = stage === 'connected' && !browserOnly && connectedSince;
+  uptimeEl.hidden = !timed;
+  if (timed) uptimeEl.textContent = formatDuration(connectedSince);
 
   toggle.textContent = connected ? 'Disconnect' : 'Connect';
-  toggle.dataset.action = connected ? 'disconnect' : 'connect';
+  toggle.dataset.action = MODE_ACTIONS[mode][connected ? 'off' : 'on'];
   toggle.disabled = busy;
   if (connected) {
     toggle.dataset.state = 'connected';
@@ -165,6 +239,20 @@ async function refresh() {
     renderSettings(meta.settings);
     renderSite(meta.allowlist ?? []);
   }
+}
+
+for (const button of modeButtons) {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    mode = button.dataset.mode;
+    renderModes(false);
+    // Nothing is started here. Picking a mode says what the button will do;
+    // pressing it is still a separate, deliberate act.
+    toggle.textContent = 'Connect';
+    toggle.dataset.action = MODE_ACTIONS[mode].on;
+    delete toggle.dataset.state;
+    showError(null);
+  });
 }
 
 toggle.addEventListener('click', async () => {

@@ -183,6 +183,10 @@ while HTTPS hangs).
 ```bash
 # Linux
 sudo install -m 755 vpnd /usr/local/bin/vpnd
+# Browser-only mode starts this one, unprivileged, from beside vpnd. Without
+# it the full tunnel works and the browser-only switch reports that the helper
+# is not installed.
+sudo install -m 755 vpn-browser-proxy /usr/local/bin/vpn-browser-proxy
 sudo groupadd -f vpn && sudo usermod -aG vpn "$USER"   # then log out and back in
 sudo cp deploy/vpnd.service /etc/systemd/system/
 sudo systemctl enable --now vpnd

@@ -12,6 +12,7 @@ import 'helpers/fakes.dart';
 late FakeHttpClient http;
 late FakeSecureStorageChannel storage;
 late FakeTunnel tunnel;
+late FakeBrowserTunnel browser;
 late SecureStore store;
 late ApiClient api;
 late EnrollController enrol;
@@ -85,6 +86,7 @@ void main() {
     http = FakeHttpClient();
     storage = FakeSecureStorageChannel()..install();
     tunnel = FakeTunnel();
+    browser = FakeBrowserTunnel();
     store = SecureStore();
     api = ApiClient(store: store, httpClient: http, baseUrl: base);
 
@@ -92,6 +94,7 @@ void main() {
       devices: DeviceRepository(api: api),
       store: store,
       tunnel: tunnel,
+      browserTunnel: browser,
       // The retry spacing is real time in production and pointless here.
       settleScale: 0,
     );
@@ -961,6 +964,108 @@ void main() {
       await vpn.refreshPublicAddress();
 
       expect(vpn.servers, hasLength(1));
+    });
+  });
+
+  group('browser-only mode', () {
+    setUp(() async {
+      await store.saveDeviceToken('vpndev_live');
+      http.enqueue('GET', '/servers', body: {'servers': serverList});
+      await vpn.initialize();
+    });
+
+    test('the button drives the chosen tunnel and nothing else', () async {
+      vpn.setMode(VpnMode.browser);
+
+      await vpn.toggle();
+
+      expect(browser.startCalls, 1);
+      expect(vpn.browserTunnel.endpoint, '127.0.0.1:49152');
+      // The whole point of the mode: nothing system-wide is touched. A single
+      // call here would mean an interface and a changed routing table.
+      expect(tunnel.startedConfigs, isEmpty);
+      expect(tunnel.ownIdentityStarts, 0);
+      expect(vpn.stage, TunnelStage.disconnected);
+    });
+
+    test('isConnected stays honest while only the browser is tunnelled',
+        () async {
+      vpn.setMode(VpnMode.browser);
+      await vpn.toggle();
+
+      // This app is not the browser. Its own connection is unchanged, and the
+      // address it measures is still the real one — saying "connected" here
+      // would make that address read as a failure rather than as the design.
+      expect(vpn.isConnected, isFalse);
+      expect(vpn.isActive, isTrue);
+      expect(vpn.statusLabel, 'Browser connected');
+    });
+
+    test('the two modes cannot both be chosen', () async {
+      tunnel.ownIdentity = true;
+      await vpn.toggle();
+      expect(vpn.isConnected, isTrue);
+
+      // Refused while the full tunnel is up. Switching would mean taking one
+      // down to start the other, with a gap nobody asked for in between.
+      vpn.setMode(VpnMode.browser);
+      expect(vpn.mode, VpnMode.system);
+
+      await vpn.toggle();
+      vpn.setMode(VpnMode.browser);
+      expect(vpn.mode, VpnMode.browser);
+    });
+
+    test('turning it off stops the browser tunnel, not the interface',
+        () async {
+      vpn.setMode(VpnMode.browser);
+      await vpn.toggle();
+
+      await vpn.toggle();
+
+      expect(browser.stopCalls, 1);
+      expect(tunnel.stopCalls, 0);
+      expect(vpn.isActive, isFalse);
+    });
+
+    test('a refusal from the service reaches the user', () async {
+      vpn.setMode(VpnMode.browser);
+      browser.startError = const TunnelException('The full VPN is on.');
+
+      await vpn.toggle();
+
+      expect(vpn.error, 'The full VPN is on.');
+      expect(vpn.isActive, isFalse);
+    });
+
+    test('signing out takes the browser tunnel down too', () async {
+      vpn.setMode(VpnMode.browser);
+      await vpn.toggle();
+      expect(vpn.isActive, isTrue);
+
+      await vpn.endSession(SessionEndReason.signedOut);
+
+      // Signing out revokes the device this tunnel was built from. A browser
+      // still routed through a deleted peer, on a screen that says signed
+      // out, is the worst of both.
+      expect(browser.stopCalls, 1);
+      expect(vpn.isActive, isFalse);
+    });
+
+    test('a tunnel started elsewhere is picked up', () async {
+      // The extension drives the same service. An app that opened afterwards
+      // must show what is running, not what it last did itself.
+      browser.state_ = const BrowserTunnelState(
+        running: true,
+        host: '127.0.0.1',
+        port: 51000,
+      );
+
+      await vpn.refreshBrowserTunnel();
+
+      expect(vpn.mode, VpnMode.browser);
+      expect(vpn.isActive, isTrue);
+      expect(vpn.browserTunnel.port, 51000);
     });
   });
 }

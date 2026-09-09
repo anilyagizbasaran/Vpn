@@ -16,6 +16,20 @@
         <span id="uptime" class="uptime" hidden></span>
       </div>
 
+      <!--
+        Which tunnel the button below turns on. Alternatives, not settings:
+        the daemon refuses to run both, so only one can be chosen at a time and
+        the choice is locked while either is up.
+      -->
+      <div class="modes" id="modes" role="radiogroup" aria-label="What to protect">
+        <button type="button" class="mode" data-mode="system" role="radio" aria-checked="true">
+          Whole computer
+        </button>
+        <button type="button" class="mode" data-mode="browser" role="radio" aria-checked="false">
+          This browser
+        </button>
+      </div>
+
       <button id="toggle" class="toggle" disabled>…</button>
 
       <p id="error" class="error" hidden></p>

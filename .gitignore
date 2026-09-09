@@ -12,6 +12,11 @@ server/dist/
 
 # Go
 vpnd/bin/
+# `go build` with no -o drops the binary next to the source, named after the
+# module. Two modules here, so two names.
+vpnd/vpnd
+vpnd/browserproxy/vpnbrowserproxy
+vpnd/browserproxy/vpn-browser-proxy
 *.exe
 *.test
 

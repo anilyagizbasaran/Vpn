@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"vpnd/internal/browser"
 	"vpnd/internal/enroll"
 	"vpnd/internal/ipc"
 	"vpnd/internal/tunnel"
@@ -36,6 +37,10 @@ func main() {
 		mock       = flag.Bool("mock", false, "simulate the tunnel instead of touching a real interface")
 		killSwitch = flag.Bool("kill-switch", false,
 			"block traffic that is not going through the tunnel (Linux; Windows does this itself)")
+		browserHelper = flag.String("browser-proxy", "",
+			"path of the browser-only tunnel helper (default: beside this binary)")
+		browserUser = flag.String("browser-proxy-user", browser.DefaultUser,
+			"unprivileged account the browser-only tunnel runs as (Unix)")
 		verbose = flag.Bool("verbose", false, "log at debug level")
 		showVer = flag.Bool("version", false, "print the version and exit")
 	)
@@ -52,13 +57,21 @@ func main() {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
+	opts := options{
+		socketPath:    *socketPath,
+		iface:         *iface,
+		configDir:     *configDir,
+		mock:          *mock,
+		killSwitch:    *killSwitch,
+		browserHelper: *browserHelper,
+		browserUser:   *browserUser,
+	}
+
 	// Under the service control manager the lifecycle is its to drive: it
 	// decides when to stop, and it expects to be told when the service is
 	// running. From a console the signal handling below is the whole story.
 	if isWindowsService() {
-		serve := func(ctx context.Context) error {
-			return run(ctx, log, *socketPath, *iface, *configDir, *mock, *killSwitch)
-		}
+		serve := func(ctx context.Context) error { return run(ctx, log, opts) }
 		if err := runService(log, serviceName, serve); err != nil {
 			log.Error("vpnd stopped", "error", err)
 			os.Exit(1)
@@ -69,7 +82,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, log, *socketPath, *iface, *configDir, *mock, *killSwitch); err != nil {
+	if err := run(ctx, log, opts); err != nil {
 		log.Error("vpnd stopped", "error", err)
 		os.Exit(1)
 	}
@@ -79,14 +92,27 @@ func main() {
 // start, and a mismatch is rejected before Execute ever runs.
 const serviceName = "vpnd"
 
-func run(
-	ctx context.Context,
-	log *slog.Logger,
-	socketPath, iface, configDir string,
-	mock, killSwitch bool,
-) error {
+// options is what the command line asked for. A struct rather than eight
+// positional arguments, which is where a wrong flag ends up silently swapped
+// with its neighbour.
+type options struct {
+	socketPath string
+	iface      string
+	configDir  string
+	mock       bool
+	killSwitch bool
+
+	// Where the browser-only helper is, and who it runs as. Empty means
+	// beside this binary, and [browser.DefaultUser].
+	browserHelper string
+	browserUser   string
+}
+
+func run(ctx context.Context, log *slog.Logger, opts options) error {
+	socketPath, iface, configDir := opts.socketPath, opts.iface, opts.configDir
+
 	var driver tunnel.Driver
-	if mock {
+	if opts.mock {
 		log.Warn("mock driver active — no real tunnel will be configured")
 		driver = &tunnel.MockDriver{}
 	} else {
@@ -96,7 +122,7 @@ func run(
 	}
 
 	manager := tunnel.NewManager(driver, iface, log)
-	manager.SetKillSwitch(chooseKillSwitch(killSwitch, mock))
+	manager.SetKillSwitch(chooseKillSwitch(opts.killSwitch, opts.mock))
 
 	// Before anything can connect. A previous run that crashed with the rules
 	// installed leaves a machine with no network and nothing on screen to
@@ -123,8 +149,18 @@ func run(
 		"killSwitch", manager.KillSwitchName(),
 		"version", ipc.Version)
 
+	server := ipc.NewServer(manager, identity, log)
+
+	// Browser-only mode: a userspace tunnel in a helper process, with no
+	// interface and no route of its own. Always available — it needs no
+	// privileges and changes nothing until something asks for it.
+	server.SetBrowser(browser.New(
+		browser.NewLauncher(opts.browserHelper, browser.Credentials{User: opts.browserUser}),
+		log,
+	))
+
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- ipc.NewServer(manager, identity, log).Serve(ctx, listener) }()
+	go func() { serveErr <- server.Serve(ctx, listener) }()
 
 	select {
 	case err := <-serveErr:
@@ -135,6 +171,12 @@ func run(
 	// A tunnel must never outlive the daemon that manages it: nothing else
 	// would be able to take it down, and the user would be left believing a
 	// dead process is protecting them.
+	// The browser tunnel is a child process; without this it survives the
+	// daemon and goes on proxying through a tunnel nothing can take down.
+	if err := server.StopBrowser(); err != nil {
+		log.Error("could not stop the browser tunnel", "error", err)
+	}
+
 	log.Info("shutting down, tearing the tunnel down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

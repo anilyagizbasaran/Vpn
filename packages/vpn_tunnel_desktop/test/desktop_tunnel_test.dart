@@ -37,6 +37,12 @@ class FakeDaemon {
   /// When set, `enroll` fails with this message.
   String? enrolError;
 
+  /// The browser-only tunnel: null when off, a port when running.
+  int? socksPort;
+
+  /// When set, `start_browser_only` fails with this message.
+  String? browserError;
+
   Future<void> start() async {
     final dir = await Directory.systemTemp.createTemp('vpnd_test');
     path = '${dir.path}${Platform.pathSeparator}vpnd.sock';
@@ -92,7 +98,17 @@ class FakeDaemon {
         });
       case 'status':
       case 'subscribe':
-        ok({'stage': stage, 'interface': 'vpn0'});
+        ok(_status());
+      case 'start_browser_only':
+        if (browserError != null) {
+          fail('bad_request', browserError!);
+          return;
+        }
+        socksPort = 49152;
+        ok(_status());
+      case 'stop_browser_only':
+        socksPort = null;
+        ok(_status());
       case 'up':
         if (upDelay > Duration.zero) await Future<void>.delayed(upDelay);
         if (upError != null) {
@@ -141,6 +157,18 @@ class FakeDaemon {
         fail('bad_request', 'unknown method');
     }
   }
+
+  /// The status result, which is also what most methods answer with.
+  Map<String, dynamic> _status() => {
+    'stage': stage,
+    'interface': 'vpn0',
+    if (socksPort != null) ...{
+      'browserOnly': true,
+      'socksHost': '127.0.0.1',
+      'socksPort': socksPort,
+    } else
+      'browserOnly': false,
+  };
 
   /// Pushes an unsolicited stage event, as the daemon does for subscribers.
   ///
@@ -483,6 +511,88 @@ void main() {
       // A machine set up by an older app, which still holds its own key. The
       // controller above prepares a config and calls start().
       expect(await tunnel.startFromOwnIdentity(), isFalse);
+    });
+  });
+
+  group('browser-only mode', () {
+    late DaemonBrowserTunnel browser;
+
+    setUp(() {
+      browser = DaemonBrowserTunnel(socketPath: daemon.path);
+    });
+
+    test('starting reports where the browser should point', () async {
+      final state = await browser.start();
+
+      expect(state.running, isTrue);
+      // The address comes from the daemon rather than being assumed here. A
+      // host invented by the client is how a proxy ends up advertised on
+      // something other than loopback.
+      expect(state.host, '127.0.0.1');
+      expect(state.port, 49152);
+      expect(state.endpoint, '127.0.0.1:49152');
+    });
+
+    test('the interface is never touched', () async {
+      await browser.start();
+
+      // The acceptance test for the whole mode, at this layer: nothing
+      // system-wide is asked for. `up`, `down` and `reconnect` all change the
+      // routing table, and none of them may appear here.
+      expect(
+        daemon.requests.map((r) => r['method']),
+        isNot(anyElement(isIn(['up', 'down', 'reconnect']))),
+      );
+      expect(daemon.stage, DaemonStage.disconnected);
+    });
+
+    test('state reports what the service is actually running', () async {
+      // The daemon outlives this app and the browser extension drives the
+      // same one, so what is running may have been decided elsewhere.
+      expect((await browser.state()).running, isFalse);
+
+      daemon.socksPort = 51000;
+      final state = await browser.state();
+      expect(state.running, isTrue);
+      expect(state.port, 51000);
+    });
+
+    test('stopping clears it', () async {
+      await browser.start();
+      await browser.stop();
+
+      expect((await browser.state()).running, isFalse);
+      // Twice, because the switch has to work when the thing it controls has
+      // already gone.
+      await browser.stop();
+    });
+
+    test('a refusal reaches the user', () async {
+      // The daemon refuses while the system-wide tunnel is up, and that has
+      // to arrive as a message rather than as a switch that does nothing.
+      daemon.browserError = 'The full VPN is on. Turn it off first.';
+
+      await expectLater(
+        browser.start(),
+        throwsA(
+          isA<TunnelException>().having(
+            (e) => e.message,
+            'message',
+            contains('Turn it off first'),
+          ),
+        ),
+      );
+    });
+
+    test('no daemon means off, not an error', () async {
+      final absent = DaemonBrowserTunnel(
+        socketPath: '${daemon.path}.missing',
+      );
+
+      // A switch that throws on a machine where the service is not running
+      // would be a broken screen; "off" is both true and actionable.
+      expect((await absent.state()).running, isFalse);
+      await absent.stop();
     });
   });
 }

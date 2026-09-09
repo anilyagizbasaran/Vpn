@@ -61,16 +61,26 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $target = Join-Path $InstallDir 'vpnd.exe'
 Copy-Item $BinaryPath $target -Force
 
-# vpnctl travels with the daemon, because the line this script prints at the
-# end tells you to run it. Taken from beside the binary given, which is where
-# both a go build and the release archive put it.
-$vpnctlSource = Join-Path (Split-Path $BinaryPath) 'vpnctl.exe'
-if (Test-Path $vpnctlSource) {
-    Copy-Item $vpnctlSource (Join-Path $InstallDir 'vpnctl.exe') -Force
-    Write-Host '    vpnd.exe, vpnctl.exe'
-} else {
-    Write-Host '    vpnd.exe only; vpnctl.exe was not next to it'
+# The binaries that travel with the daemon. vpnctl because the line this
+# script prints at the end tells you to run it, and vpn-browser-proxy because
+# vpnd starts it by name from its own directory when browser-only mode is
+# switched on — a missing one is a feature that fails at the button rather
+# than here.
+#
+# Taken from beside the binary given, which is where both a go build and the
+# release archive put them.
+$installed = @('vpnd.exe')
+foreach ($name in 'vpnctl.exe', 'vpn-browser-proxy.exe') {
+    $source = Join-Path (Split-Path $BinaryPath) $name
+    if (Test-Path $source) {
+        Copy-Item $source (Join-Path $InstallDir $name) -Force
+        $installed += $name
+    } else {
+        Write-Warning "$name was not next to vpnd.exe and has not been installed."
+    }
 }
+Write-Host "    $($installed -join ', ')"
+
 
 Write-Host '==> Preparing the data directory'
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null

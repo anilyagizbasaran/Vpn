@@ -13,23 +13,39 @@ import 'session_end_reason.dart';
 /// happening.
 enum VpnAction { idle, preparing, connecting, disconnecting }
 
+/// Which tunnel the Connect button turns on.
+///
+/// Never both. [VpnMode.system] routes the whole computer through a network
+/// interface; [VpnMode.browser] creates no interface and changes no route, and
+/// tunnels a browser through a loopback proxy instead. Two tunnels to the same
+/// server would be two paths for the same traffic with no way to say which one
+/// carried a request, so the daemon refuses to run them together and this is
+/// where the app makes the choice visible.
+enum VpnMode { system, browser }
+
 class VpnController extends ChangeNotifier {
   VpnController({
     required DeviceRepository devices,
     required DeviceStore store,
     required Tunnel tunnel,
+    BrowserTunnel? browserTunnel,
     Duration keyRotationInterval = const Duration(days: 7),
     // Scales the waits above. Tests set it to zero; nothing else changes it.
     double settleScale = 1,
   }) : _devices = devices,
        _store = store,
        _tunnel = tunnel,
+       _browserTunnel = browserTunnel,
        _keyRotationInterval = keyRotationInterval,
        _settleScale = settleScale;
 
   final DeviceRepository _devices;
   final DeviceStore _store;
   final Tunnel _tunnel;
+
+  /// Null where browser-only mode does not exist. The switch is then not
+  /// offered at all, rather than offered and failing when pressed.
+  final BrowserTunnel? _browserTunnel;
 
   /// How old a device key may get before it is replaced on the next connect.
   /// Rotation is what makes a leaked config expire on its own.
@@ -61,6 +77,8 @@ class VpnController extends ChangeNotifier {
   ];
 
   VpnAction _action = VpnAction.idle;
+  VpnMode _mode = VpnMode.system;
+  BrowserTunnelState _browser = BrowserTunnelState.off;
   String? _error;
   Device? _device;
   List<VpnServer> _servers = const [];
@@ -121,13 +139,47 @@ class VpnController extends ChangeNotifier {
     return null;
   }
 
+  /// Whether the computer's own traffic goes through the tunnel.
+  ///
+  /// Deliberately false in browser-only mode: this app is not the browser, and
+  /// nothing about its own connection has changed. Saying otherwise here would
+  /// make the address on screen — which is still this computer's real one —
+  /// read as a lie rather than as the point.
   bool get isConnected => _stage == TunnelStage.connected;
+
+  /// Whether either tunnel is up. What the power button acts on.
+  bool get isActive => isConnected || _browser.running;
+
   bool get isBusy => _action != VpnAction.idle || isBusyStage(_stage);
+
+  /// Which tunnel the button will turn on.
+  VpnMode get mode => _mode;
+
+  /// Whether browser-only mode exists on this platform at all.
+  bool get supportsBrowserOnly => _browserTunnel != null;
+
+  /// Where the browser should point while browser-only mode is on.
+  BrowserTunnelState get browserTunnel => _browser;
+
+  /// Switches which tunnel the button drives.
+  ///
+  /// Refused while either is up. Silently taking one down to start the other
+  /// would mean a moment with no tunnel at all, chosen by nobody — and the
+  /// user's next request would go out in the clear during it.
+  void setMode(VpnMode next) {
+    if (_mode == next || isActive || isBusy) return;
+    _mode = next;
+    _error = null;
+    notifyListeners();
+  }
 
   String get statusLabel => switch (_action) {
     VpnAction.preparing => 'Preparing your device…',
     VpnAction.connecting => 'Connecting…',
     VpnAction.disconnecting => 'Disconnecting…',
+    // Named for what it is. "Connected" over an unchanged routing table would
+    // be true of the browser and false of everything else on the machine.
+    VpnAction.idle when _browser.running => 'Browser connected',
     VpnAction.idle => describeStage(_stage),
   };
 
@@ -172,6 +224,9 @@ class VpnController extends ChangeNotifier {
     await _loadAccount();
     notifyListeners();
     unawaited(refreshPublicAddress());
+    // The service may already be running a browser tunnel started by the
+    // extension, or by this app before it was last closed.
+    unawaited(refreshBrowserTunnel());
   }
 
   /// Asks the server what address it sees. Failure is silent by design: this
@@ -393,6 +448,7 @@ class VpnController extends ChangeNotifier {
 
   Future<void> connect() async {
     if (_action != VpnAction.idle) return;
+    if (_mode == VpnMode.browser) return _startBrowserOnly();
 
     _action = VpnAction.preparing;
     _error = null;
@@ -430,6 +486,7 @@ class VpnController extends ChangeNotifier {
 
   Future<void> disconnect() async {
     if (_action != VpnAction.idle) return;
+    if (_browser.running) return _stopBrowserOnly();
 
     _action = VpnAction.disconnecting;
     _error = null;
@@ -445,7 +502,72 @@ class VpnController extends ChangeNotifier {
     }
   }
 
-  Future<void> toggle() => isConnected ? disconnect() : connect();
+  Future<void> toggle() => isActive ? disconnect() : connect();
+
+  /// Starts the browser tunnel.
+  ///
+  /// No config is prepared and no key is touched here, unlike [connect]: the
+  /// service holds the identity and builds the tunnel itself. All that comes
+  /// back is a loopback address.
+  Future<void> _startBrowserOnly() async {
+    final browser = _browserTunnel;
+    if (browser == null) return;
+
+    _action = VpnAction.connecting;
+    _error = null;
+    notifyListeners();
+
+    try {
+      _browser = await browser.start();
+    } on TunnelException catch (error) {
+      _error = error.message;
+    } catch (error) {
+      _error = 'Unexpected error while starting the browser tunnel: $error';
+    } finally {
+      _action = VpnAction.idle;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _stopBrowserOnly() async {
+    final browser = _browserTunnel;
+    if (browser == null) return;
+
+    _action = VpnAction.disconnecting;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await browser.stop();
+    } on TunnelException catch (error) {
+      _error = error.message;
+    } finally {
+      // Cleared whatever happened. A switch stuck on because the thing it
+      // controls could not be reached is worse than one that says off and is:
+      // the user can try again, and nothing here claims protection.
+      _browser = BrowserTunnelState.off;
+      _action = VpnAction.idle;
+      notifyListeners();
+    }
+  }
+
+  /// Asks the service what it is actually running.
+  ///
+  /// The daemon outlives this app and the browser extension drives the same
+  /// one, so the browser tunnel may have been turned on or off by something
+  /// else entirely since this app last looked.
+  Future<void> refreshBrowserTunnel() async {
+    final browser = _browserTunnel;
+    if (browser == null) return;
+
+    final state = await browser.state();
+    if (state.running == _browser.running && state.port == _browser.port) {
+      return;
+    }
+    _browser = state;
+    if (state.running) _mode = VpnMode.browser;
+    notifyListeners();
+  }
 
   Future<void> _stopQuietly() async {
     try {
@@ -453,6 +575,15 @@ class VpnController extends ChangeNotifier {
     } catch (_) {
       // Nothing running, or the platform refused. Never block sign-out.
     }
+    try {
+      // Both tunnels, because signing out revokes the device this one is
+      // built from. Leaving it up would be a browser still routed through a
+      // peer the server has already deleted, on a screen that is signed out.
+      await _browserTunnel?.stop();
+    } catch (_) {
+      // Same reason as above.
+    }
+    _browser = BrowserTunnelState.off;
   }
 
   Future<void> _revokeCurrentDevice() async {

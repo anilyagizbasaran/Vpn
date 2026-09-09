@@ -25,6 +25,13 @@ func (s *Server) enrol(ctx context.Context, params protocol.EnrollParams) (any, 
 		}
 	}
 
+	// Before the invite is spent. Enrolment ends by bringing the tunnel up,
+	// which browser-only mode excludes — and finding that out afterwards would
+	// cost the user a code that is only good once.
+	if apiErr := s.refuseWhileBrowserOnly(); apiErr != nil {
+		return nil, apiErr
+	}
+
 	address, err := enroll.ValidateAddress(params.ServerAddress)
 	if err != nil {
 		return nil, &protocol.Error{Code: protocol.CodeBadRequest, Message: err.Error()}
@@ -78,6 +85,13 @@ func (s *Server) enrol(ctx context.Context, params protocol.EnrollParams) (any, 
 func (s *Server) status() protocol.StatusResult {
 	result := s.manager.Status()
 	result.Enrolled = s.manager.CanReconnect() || s.canRefetch()
+	if s.browser != nil {
+		result.SocksPort, result.BrowserOnly = s.browser.Running()
+		if result.BrowserOnly {
+			// Named here, once, so nothing downstream has to know it.
+			result.SocksHost = "127.0.0.1"
+		}
+	}
 	return result
 }
 
@@ -185,6 +199,13 @@ func (s *Server) reconnectFromIdentity(ctx context.Context) (any, *protocol.Erro
 // came from a server the user named, which is not the same as a server that
 // can be trusted to put a PostUp hook in front of a process running as root.
 func (s *Server) bringUp(ctx context.Context, controlPlane string, result enroll.Result) *protocol.Error {
+	// The backstop for the mutual exclusion. Every path that raises an
+	// interface goes through here or through MethodUp, so the invariant holds
+	// even when a new caller forgets it.
+	if apiErr := s.refuseWhileBrowserOnly(); apiErr != nil {
+		return apiErr
+	}
+
 	config := tunnel.NormalizeConfig(result.Config)
 
 	// Told before the tunnel comes up, so the kill switch can carve out the

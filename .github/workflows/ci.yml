@@ -68,6 +68,32 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
           done
 
+      # The daemon takes one dependency and says why in its go.mod. The
+      # browser-only tunnel needs a userspace network stack, which is eighty
+      # more — so it lives in its own module and its own unprivileged binary.
+      # This is the check that the boundary is still where it was put.
+      - name: The daemon has not grown dependencies
+        run: |
+          count=$(go list -m all | tail -n +2 | wc -l)
+          if [ "$count" -gt 1 ]; then
+            echo "vpnd now has $count dependencies, not 1:"; go list -m all | tail -n +2
+            echo "Third-party code here runs as root. Put it in browserproxy instead."
+            exit 1
+          fi
+
+      - name: Browser-only tunnel
+        working-directory: vpnd/browserproxy
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would change:"; echo "$unformatted"; exit 1
+          fi
+          go vet ./...
+          go test ./...
+          for target in windows/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
+          done
+
   client:
     name: Dart packages and apps
     runs-on: ubuntu-latest
@@ -282,7 +308,17 @@ jobs:
           popup = open('extension/popup.js').read()
           worker = open('extension/background.js').read()
 
+          # Two sources. Some messages are sent as a literal `type:` and some
+          # through a dataset attribute the popup sets earlier, which a grep
+          # for `type:` never sees — so popup.js also names them all in a
+          # MESSAGES array, and both are checked.
           sent = set(re.findall(r"type:\s*'([a-z-]+)'", popup))
+          listed = re.search(r'const MESSAGES = \[(.*?)\];', popup, re.S)
+          if not listed:
+              print('::error::popup.js no longer declares MESSAGES')
+              sys.exit(1)
+          sent |= set(re.findall(r"'([a-z-]+)'", listed.group(1)))
+
           handled = set(re.findall(r"case\s*'([a-z-]+)'", worker))
 
           missing = sorted(sent - handled)

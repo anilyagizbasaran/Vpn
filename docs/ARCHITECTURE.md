@@ -188,16 +188,50 @@ exactly how Tailscale's Windows client got a vulnerability. Dart's AF_UNIX
 support on Windows was measured, not assumed
 (`packages/vpn_tunnel/tool/af_unix_probe.dart`).
 
-**The extension cannot send a config.** The bridge permits exactly four
-actions: status, connect, disconnect, enroll. "Connect" re-applies the config
-the daemon already accepted in this session, or fetches a fresh one if this
-machine has enrolled.
+**The extension cannot send a config.** The bridge permits exactly six
+actions: status, connect, disconnect, enroll, and the two that switch
+browser-only mode on and off. "Connect" re-applies the config the daemon
+already accepted in this session, or fetches a fresh one if this machine has
+enrolled. Every one of them is a verb with no configuration attached — what
+comes back is a stage, or a loopback port number.
 
 **The extension cannot read a credential or erase one.** `identity` and
 `forget` exist on the daemon socket, which is local and ACL-protected, and are
 kept off the bridge: the first hands out a device token, the second is
 destructive and machine-wide. `cmd/vpn-browser-host` asserts both in a test —
 the allowlist is the boundary, so it is checked rather than trusted.
+
+**Browser-only mode is a separate binary, and a separate module.** It needs a
+WireGuard implementation that terminates in userspace, which means a userspace
+network stack: eighty-odd third-party modules against `vpnd`'s deliberate one.
+Linking them into the daemon would put that much unaudited code, parsing
+hostile packets, inside a process running as root or LocalSystem. It needs no
+privileges of its own, so it gets none — `vpnd/browserproxy` is its own Go
+module built into `vpn-browser-proxy`, which the daemon starts after dropping
+to an unprivileged account on Unix and onto a restricted token on Windows. The
+configuration goes down its stdin, never an argument, because arguments are
+readable by every process on the machine and this one contains a private key.
+
+That pipe then stays open. It is how the helper learns the daemon has gone: if
+`vpnd` is killed rather than asked to stop, nothing sends a signal, but the
+operating system closes the pipe — the difference between a tunnel that ends
+with the daemon and one left running that nothing can take down.
+
+**Browser-only mode resolves names inside the tunnel.** A proxy that carries
+the connection but leaves the lookup to the browser leaks every site visited to
+the local network's DNS, while each page loads over something that looks
+private. So Chrome is configured with the `socks5` scheme — which sends
+hostnames to the proxy rather than resolving them first — and the proxy dials
+the tunnel's own DNS servers through the netstack. The SOCKS server refuses
+UDP ASSOCIATE rather than half-implementing it, and the extension forces
+`disable_non_proxied_udp` while the mode is on, because the UDP that WebRTC
+would otherwise open is the one path out that a TCP proxy cannot cover.
+
+**The two modes exclude each other.** Enforced in the daemon, not the UI: two
+tunnels to the same peer would be two paths for the same traffic, and nothing
+on the machine could say which one carried a request. The app and the extension
+both grey the choice out while either is running, which is how a user finds
+out; the daemon refusing is what makes it true whatever is calling.
 
 **Nothing writes down who connected, or when.** The database was stripped to a
 key and an address per device, which is only half the promise: a proxy that
@@ -275,6 +309,7 @@ We test the real paths, not mocked copies of them:
 | The node protocol | Real HTTP, two nodes, isolation and concurrent allocation |
 | Key derivation | **RFC 7748 §6.1 test vectors** — not self-consistency |
 | Native messaging | A stdio round trip with real framing |
+| The browser-only helper | A real child process, compiled by the test, spawned and killed |
 
 Why key derivation is pinned to vectors: a wrong derivation produces a tunnel
 that never handshakes and never reports an error. A self-consistent test misses
